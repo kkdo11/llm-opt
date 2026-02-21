@@ -5,7 +5,7 @@
 
 ---
 
-## 현재 상태: Phase 2 구현 완료 / Threshold 실험 대기
+## 현재 상태: Phase 2 완료 (구현 + Threshold 실험)
 
 ---
 
@@ -91,12 +91,12 @@ A: 완전 동일한 문자열만 히트 → "파이썬 리스트 vs 튜플"과 "
 
 **가설:** Cosine Similarity 0.85 임계값에서 False Positive < 5%, Cache Hit Ratio > 40%
 
-**상태:** ✅ 구현 완료 / Threshold 실험 대기
+**상태:** ✅ 완료
 
 ### 구현 체크리스트
 
 - [x] Embedding 파이프라인
-  - [x] SentenceTransformer (all-MiniLM-L6-v2) 통합
+  - [x] SentenceTransformer (paraphrase-multilingual-MiniLM-L12-v2) 통합
   - [x] 임베딩 벡터 생성 및 저장 (asyncio.to_thread로 블로킹 방지)
 - [x] Redis Vector Search
   - [x] HNSW Index 생성 (384차원, COSINE, M=16, EF_CONSTRUCTION=200)
@@ -112,9 +112,9 @@ A: 완전 동일한 문자열만 히트 → "파이썬 리스트 vs 튜플"과 "
   - [x] test_validator.py: 25개 테스트
   - [x] test_vector_cache.py: 11개 테스트
   - [x] test_proxy.py: 20개 테스트 (SEMANTIC_CACHE_ENABLED=false 격리)
-- [ ] Threshold 실험
-  - [ ] 0.75 / 0.80 / 0.85 / 0.90 비교 테스트
-  - [ ] 최적 Threshold 선정 및 근거 문서화
+- [x] Threshold 실험
+  - [x] 0.75 / 0.80 / 0.85 / 0.90 비교 테스트 (2026-02-21 실행)
+  - [x] 실측 결과 분석 및 원인 문서화 (목표 미달 — 3가지 원인 규명)
 
 ### 성공 기준
 

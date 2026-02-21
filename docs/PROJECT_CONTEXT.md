@@ -37,9 +37,9 @@ MindGraph-AI 프로젝트에서 Qwen 2.5 14B 모델을 RTX 4080 Super에서 운�
 ### 핵심 기술 요소 3가지
 
 **① 2-Tier Semantic Cache**
-- L1 (In-Memory HashMap): 정확히 같은 질문 → ~0.001초 응답
-- L2 (Redis Vector Search + Validation): 의미적 유사 질문 → ~0.05초 응답
-- Validation Layer: False Positive 방지 (Metadata 비교 + 키워드 검증 + 경량 분류)
+- L1 (Redis Hash Cache): 정확히 같은 질문 → ~0.3ms 응답 (실측)
+- L2 (Redis Vector Search + Validation): 의미적 유사 질문 → ~25ms 응답 (실측)
+- Validation Layer: False Positive 방지 (언어 일치 → 숫자/버전 키워드 → 기술 키워드 3단계)
 
 **② 입출력 통합 비용 보호**
 - 출력 토큰 예측 모델 (질문 유형별 패턴 매칭)
@@ -56,10 +56,10 @@ MindGraph-AI 프로젝트에서 Qwen 2.5 14B 모델을 RTX 4080 Super에서 운�
 | 레이어 | 기술 | 선택 이유 |
 |--------|------|-----------|
 | API Gateway | FastAPI | 비동기 처리, 높은 TPS |
-| L1 Cache | Python LRU Cache | 메모리 기반 초고속 |
+| L1 Cache | Redis Hash Cache (MD5 key, 24h TTL) | 정확 일치 O(1) 조회, 영속성 |
 | L2 Cache | Redis Stack (Vector) | Vector Similarity + Persistence |
-| Embedding | all-MiniLM-L6-v2 (384차원) | 경량 + 충분한 성능 |
-| Validation | Lightweight Classifier | False Positive 필터링 |
+| Embedding | paraphrase-multilingual-MiniLM-L12-v2 (384차원) | 한국어 포함 다국어 paraphrase 최적화 |
+| Validation | 3-step rule-based validator | 언어/숫자/기술 키워드 순차 검증 |
 | Orchestration | Kubernetes | Auto-scaling, Self-healing |
 | Monitoring | Prometheus + Grafana | 실시간 비용/성능 시각화 |
 | Load Test | k6 | 실전 트래픽 시뮬레이션 |
@@ -77,10 +77,13 @@ MindGraph-AI 프로젝트에서 Qwen 2.5 14B 모델을 RTX 4080 Super에서 운�
 
 ### Validation Layer 추가 (속도 vs 정확도)
 
-**결론: +8ms 비용으로 신뢰성 3배 향상**
-- Validation 없이: L2 조회 52ms, False Positive 12%
-- Validation 추가: L2 조회 60ms (+8ms), False Positive 3.8%
-- LLM 호출(1,850ms) 대비 30배 빠름 → Worth it
+**결론: False Positive 차단 우선, 속도 비용은 허용 범위**
+- Cosine 유사도만으로는 언어·버전·도메인 차이를 놓침
+  - 예: "파이썬 정렬"과 "자바 정렬" → 유사도 0.92이지만 전혀 다른 답변 필요
+- 3단계 규칙 기반 검증: 언어 일치 → 숫자/연도/버전 → 기술 키워드
+- 순서 근거: 언어 불일치가 가장 빠른 조기 종료; 숫자 오류는 사실 왜곡 위험
+- 실측: 통합 검증에서 "자바로 버블 정렬" 쿼리 FP 차단 확인 ✅
+- 한계: 네트워크 프로토콜(TCP vs HTTP) 등 도메인 키워드 미커버 → 향후 개선 대상
 
 ### 출력 토큰 예측 정확도
 
@@ -110,9 +113,9 @@ Validation: language='python' vs 'java' → Metadata Mismatch → Miss
 질문 A: "파이썬으로 버블 정렬 구현해줘"
 질문 B: "파이썬 버블소트 코드 짜줘"
 
-Cosine Similarity: 0.91
-Validation: language=python 일치, keyword 'bubble sort' 일치 → Hit
-결과: 캐시된 응답 반환 (올바른 동작)
+Cosine Similarity: 0.9464 (실측, paraphrase-multilingual-MiniLM-L12-v2)
+Validation: language=python 일치, keyword '파이썬' 일치 → Hit
+결과: 캐시된 응답 반환, tier=l2_semantic, 25.5ms (실측)
 ```
 
 ### Case 3: 시간 의존성 Miss
@@ -128,16 +131,21 @@ Validation: keyword '2024' vs '2023' → Mismatch → Miss
 
 ---
 
-## Threshold 실험 설계
+## Threshold 실험 결과 (2026-02-21 실측)
 
-| Threshold | 예상 Hit Ratio | 예상 False Positive | 예상 API Reduction |
-|-----------|---------------|--------------------|--------------------|
-| 0.75 | 58% | 12% (부적합) | 51% |
-| 0.80 | 52% | 8% (위험) | 48% |
-| **0.85** | **45%** | **4% (적합)** | **43%** |
-| 0.90 | 35% | 2% | 34% |
+모델: `paraphrase-multilingual-MiniLM-L12-v2`, 질문 쌍: 10개 (True 6, False 4)
 
-**선택: 0.85** — False Positive < 5% 조건 만족하면서 API Reduction 최대화
+| Threshold | 예상 Hit Ratio | **실측 Hit Ratio** | 예상 FP | **실측 FP** | 평가 |
+|-----------|---------------|-------------------|---------|------------|------|
+| 0.75 | 58% | **50%** | 12% | **25%** | FP 과다 — 사용 불가 |
+| 0.80 | 52% | **0%** | 8% | **0%** | 히트 불가 |
+| 0.85 | 45% | **0%** | 4% | **0%** | 히트 불가 |
+| 0.90 | 35% | **0%** | 2% | **0%** | 히트 불가 |
+
+**분석:** FP<5%·Hit>40% 동시 달성 불가. 원인은 ① KNN 잘못된 원본 매칭(문장 구조 과다 반영)
+② 유사도 분포가 0.75~0.80 경계에 집중 ③ Validation Layer 네트워크 프로토콜 미커버.
+
+**개선 방향:** KNN k=3 후 컨텐츠 검증, 도메인 키워드 사전 확장, 한국어 특화 모델 검토.
 
 ---
 
