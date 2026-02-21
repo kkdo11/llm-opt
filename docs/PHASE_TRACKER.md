@@ -118,18 +118,46 @@ A: 완전 동일한 문자열만 히트 → "파이썬 리스트 vs 튜플"과 "
 
 ### 성공 기준
 
-- [ ] Cache Hit Ratio > 40%
-- [ ] False Positive Rate < 5%
-- [ ] API 호출 40% 이상 감소
+- [ ] Cache Hit Ratio > 40%  ← 미달 (실측 50%이나 내용 오류 포함)
+- [x] False Positive Rate < 5%  ← 0.80+ 에서 달성 (하지만 Hit=0%)
+- [ ] API 호출 40% 이상 감소  ← 미달
 
-### 실제 결과
+### Threshold 실험 실측 결과 (2026-02-21)
 
 ```
-(Threshold 실험 후 실측치 기록 예정)
-- Cache Hit Ratio: ___
-- False Positive Rate: ___
-- API 호출 감소율: ___%
-- 선택된 Threshold: ___
+모델: paraphrase-multilingual-MiniLM-L12-v2 (384차원)
+환경: qwen2.5:14b (Ollama), Redis Stack 7.4 HNSW
+질문 쌍: 10개 (expected_hit=True 6개, expected_hit=False 4개)
+
+[실측치]
+Threshold | Hit Ratio | False Positive | False Negative | 평가
+--------------------------------------------------------------
+   0.75   |   50.0%   |     25.0%      |     50.0%      | FP 과다
+   0.80   |    0.0%   |      0.0%      |    100.0%      | 히트 불가
+   0.85   |    0.0%   |      0.0%      |    100.0%      | 히트 불가
+   0.90   |    0.0%   |      0.0%      |    100.0%      | 히트 불가
+
+[결론] 성공 기준(FP<5%, Hit>40%) 동시 달성 불가
+
+[원인 분석 — 3가지]
+1. KNN 잘못된 원본 매칭
+   - "파이썬 버블소트 코드 짜줘" KNN 1 → "오버피팅이 무엇인지 설명해줘" (sim=0.948)
+   - 10개 원본 중 의도한 원본이 아닌 구조 유사 원본과 매칭
+   - paraphrase 모델이 "~해줘", "~설명해줘" 형식을 과도하게 유사하게 임베딩
+
+2. threshold=0.75~0.80 사이 절벽
+   - Hit@0.75=50%, Hit@0.80=0% → 히트 가능 쌍이 sim 0.75~0.80 범위에 집중
+   - 즉 실제 유사도 분포가 threshold 경계값 근처에 몰려있음
+
+3. Validation Layer 미커버 케이스
+   - "TCP/UDP 차이점" 캐시에 "HTTP/HTTPS 차이점"이 히트됨
+   - 두 질문 모두 네트워크 프로토콜 — PROGRAMMING_LANGUAGES 필터로 구분 불가
+   - 프로토콜 키워드(tcp, udp, http, https) 검증 로직 미구현
+
+[향후 개선 방향]
+A. KNN k=3 후 컨텐츠 검증 강화 (현재 k=1만 사용)
+B. 도메인별 키워드 사전 확장 (프로토콜, 알고리즘, 연도 등)
+C. 한국어 특화 임베딩 모델 검토 (예: ko-sroberta-multitask)
 ```
 
 ### 통합 검증 결과 (2026-02-21)
@@ -175,6 +203,15 @@ threshold: 0.85
 ### 면접 포인트 (Phase 2)
 
 ```
+Q: 실험 결과가 목표치를 달성하지 못했는데, 어떻게 분석했나요?
+A: 3가지 원인을 발견했습니다.
+   (1) KNN k=1 검색에서 의도한 원본이 아닌 구조 유사 원본 반환
+       — "파이썬 버블소트"가 "오버피팅" 캐시와 sim=0.948로 매칭
+   (2) Validation Layer가 네트워크 프로토콜 키워드를 구분하지 못함
+       — TCP/UDP vs HTTP/HTTPS는 PROGRAMMING_LANGUAGES 필터 밖
+   (3) 한국어 질문에서 임베딩 벡터가 문장 구조(~해줘, ~설명해줘)에
+       과도하게 영향받아 내용 차이를 충분히 반영하지 못함
+
 Q: Semantic Cache에서 COSINE 유사도를 어떻게 계산하나요?
 A: Redis Stack HNSW 인덱스는 COSINE distance를 반환 (0=동일, 2=반대).
    이를 similarity = 1.0 - distance로 변환. threshold=0.85 이상일 때만 히트.
