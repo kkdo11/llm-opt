@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  # Redis Stack: Phase 1 Hash Cache + Phase 2 Vector Search 준비
+  redis:
+    image: redis/redis-stack:7.4.0-v1
+    container_name: llm-opt-redis
+    ports:
+      - "6379:6379"   # Redis
+      - "8001:8001"   # Redis Insight (Web UI)
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Prometheus: 메트릭 수집
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: llm-opt-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+  prometheus_data:

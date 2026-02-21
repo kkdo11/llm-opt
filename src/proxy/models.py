@@ -1,0 +1,31 @@
+"""Pydantic 요청/응답 모델 정의."""
+
+from pydantic import BaseModel
+
+
+class ChatMessage(BaseModel):
+    """OpenAI 호환 채팅 메시지."""
+
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    """POST /v1/chat/completions 요청 모델."""
+
+    model: str = "qwen2.5:14b"
+    messages: list[ChatMessage]
+    stream: bool = False
+
+
+class ChatResponse(BaseModel):
+    """프록시 응답 모델.
+
+    cached=True이면 Redis에서 반환된 캐시 히트 응답.
+    latency_ms는 프록시 전체 처리 시간 (캐시 조회 포함).
+    """
+
+    id: str
+    content: str
+    cached: bool
+    latency_ms: float

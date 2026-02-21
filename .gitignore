@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.coverage
+coverage.xml
+
+# 환경변수 (시크릿 보호)
+.env
+
+# 로컬 실험 결과 (실측치는 PHASE_TRACKER.md에 기록)
+scripts/results/
+
+# MLflow (Phase 5 이후 추가 예정)
+mlruns/
+mlflow.db
