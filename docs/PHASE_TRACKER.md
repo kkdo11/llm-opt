@@ -132,6 +132,27 @@ A: 완전 동일한 문자열만 히트 → "파이썬 리스트 vs 튜플"과 "
 - 선택된 Threshold: ___
 ```
 
+### 통합 검증 결과 (2026-02-21)
+
+```
+모델: paraphrase-multilingual-MiniLM-L12-v2 (384차원)
+threshold: 0.85
+환경: qwen2.5:14b (Ollama), Redis Stack 7.4
+
+[검증 시나리오]
+1차: "파이썬으로 버블 정렬 구현해줘" → cached=False, 7,657ms (LLM 호출)
+2차: "파이썬 버블소트 코드 짜줘" (paraphrase) → cached=True, tier=l2_semantic, 25.5ms ✅
+3차: "파이썬 버블소트 코드 짜줘" (재요청) → cached=True, tier=l1_hash, 0.5ms ✅ (L1 백필 확인)
+4차: "자바로 버블 정렬 구현해줘" (FP 방어) → cached=False, 6,326ms ✅ (Validation Layer 작동)
+
+[핵심 발견: 모델 선택]
+초기 설계: all-MiniLM-L6-v2 (영어 최적화)
+실측 문제: 한국어 paraphrase 유사도 0.32~0.77 → threshold=0.85 미달
+해결: paraphrase-multilingual-MiniLM-L12-v2로 교체
+교체 후: 한국어 paraphrase 유사도 0.87~0.95 → threshold=0.85 통과
+(단, 두 쌍 "오버피팅이란" 0.57, "Stack과 Queue" 0.25는 여전히 낮음)
+```
+
 ### 트러블슈팅 기록
 
 ```
@@ -318,7 +339,7 @@ A: 의미 유사 질문이 동일 캐시 응답을 재사용한다면,
 | 2026-02-21 | 1 | redis-stack 사용 (Phase 1부터) | redis 공식 이미지 | Phase 2 Vector Search 준비; 컨테이너 교체 비용 최소화 |
 | 2026-02-21 | 1 | LLM_MODE=mock 개발 환경 분리 | 실제 Ollama 연결 | GPU 없이 개발/테스트 가능; 측정값은 실 Ollama 연결 후 기록 |
 | 2026-02-21 | 1 | prometheus-fastapi-instrumentator | 직접 /metrics 구현 | 라우터 레벨 자동 계측으로 코드 중복 제거; FastAPI 통합 검증됨 |
-| 2026-02-21 | 2 | all-MiniLM-L6-v2 (384차원) 선택 | larger 모델 (768차원+) | 384차원으로 Redis HNSW 메모리 최소화; 코드/기술 도메인 유사도 충분 |
+| 2026-02-21 | 2 | paraphrase-multilingual-MiniLM-L12-v2 선택 (교체) | all-MiniLM-L6-v2 (영어 전용) | 한국어 paraphrase 실측 유사도 0.32→0.87 향상; 384차원 동일하여 인덱스 재생성 불필요 |
 | 2026-02-21 | 2 | Validation Layer 3단계 순서 (언어→숫자→기술) | 단일 threshold만 사용 | 언어 불일치가 가장 빠른 조기 종료; 숫자/버전은 정보 손실이 크므로 우선 차단 |
 | 2026-02-21 | 2 | re.ASCII 플래그 적용 | 유니코드 모드 유지 | 한국어 텍스트에서 \b 경계 오작동 방지; 연도/버전은 ASCII 숫자이므로 ASCII 모드로 충분 |
 
@@ -332,3 +353,5 @@ A: 의미 유사 질문이 동일 캐시 응답을 재사용한다면,
 |------|-------|------|------|------|-----------------|
 | 2026-02-21 | 2 | `\b` 경계 한국어 미매치 | Python re 유니코드 모드 + 캡처 그룹 | `re.ASCII` 플래그 + 비캡처 그룹 `(?:...)` | ⬜ |
 | 2026-02-21 | 2 | TestClient lifespan mock 격리 실패 | lifespan이 with 블록 진입 전 mock 덮어씀 | with 블록 내부에서 mock 주입, `SEMANTIC_CACHE_ENABLED=false` | ⬜ |
+| 2026-02-21 | 2 | redis-py `AS score` KNN 별칭이 기본 score 속성과 충돌 | FT.SEARCH Document의 `.score`는 기본 relevance score(0) | KNN 별칭을 `vec_score`로 변경, `getattr(doc, "vec_score")` 접근 | ⬜ |
+| 2026-02-21 | 2 | all-MiniLM-L6-v2 한국어 paraphrase 유사도 낮음 | 영어 최적화 모델 — 한국어 paraphrase 0.32~0.77 | `paraphrase-multilingual-MiniLM-L12-v2`로 교체 → 0.87~0.95 | ⬜ |

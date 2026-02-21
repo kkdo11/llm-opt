@@ -209,7 +209,7 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
         })
         return ChatResponse(
             id=request_id, content=cached_content,
-            cached=True, latency_ms=round(elapsed, 2),
+            cached=True, latency_ms=round(elapsed, 2), tier="l1_hash",
         )
 
     # ── L2 Semantic Cache 조회 ─────────────────────────────────────────────
@@ -244,7 +244,7 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
                 await _cache.set(l1_key, cached_content)
                 return ChatResponse(
                     id=request_id, content=cached_content,
-                    cached=True, latency_ms=round(elapsed, 2),
+                    cached=True, latency_ms=round(elapsed, 2), tier="l2_semantic",
                 )
             else:
                 logger.debug("Validation 실패 (sim=%.4f): %s", similarity, validation.reason)

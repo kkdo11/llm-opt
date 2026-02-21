@@ -99,10 +99,12 @@ class VectorCache:
         """
         query_vec = embedding.astype(np.float32).tobytes()
 
+        # 주의: KNN 별칭을 'score'로 지정하면 redis-py Document의 기본 score(0) 속성과 충돌한다.
+        # 'vec_score'로 별칭을 분리해 KNN 거리를 올바르게 파싱한다.
         query = (
-            Query("(*)=>[KNN 1 @embedding $vec AS score]")
-            .sort_by("score")
-            .return_fields("score", "$.content", "$.model", "$.lang", "$.keywords")
+            Query("(*)=>[KNN 1 @embedding $vec AS vec_score]")
+            .sort_by("vec_score")
+            .return_fields("vec_score", "$.content", "$.model", "$.lang", "$.keywords")
             .dialect(2)
         )
 
@@ -119,17 +121,27 @@ class VectorCache:
 
         doc = results.docs[0]
         # COSINE 거리(0~2) → 유사도(0~1)
-        similarity = 1.0 - float(doc.score)
+        # decode_responses=False 환경에서는 bytes로 반환되므로 decode 처리
+        raw_score = getattr(doc, "vec_score", 1.0)
+        if isinstance(raw_score, bytes):
+            raw_score = raw_score.decode("utf-8")
+        similarity = 1.0 - float(raw_score)
 
         if similarity < self.threshold:
             logger.debug("유사도 %.4f < threshold %.2f → L2 미스", similarity, self.threshold)
             return None
 
-        content = getattr(doc, "$.content", "") or ""
-        keywords_raw = getattr(doc, "$.keywords", "[]") or "[]"
+        def _str(val: object) -> str:
+            """bytes/str 값을 str로 통일."""
+            if isinstance(val, bytes):
+                return val.decode("utf-8")
+            return str(val) if val is not None else ""
+
+        content = _str(getattr(doc, "$.content", "")) or ""
+        keywords_raw = _str(getattr(doc, "$.keywords", "[]")) or "[]"
         metadata = {
-            "lang": getattr(doc, "$.lang", "") or "",
-            "model": getattr(doc, "$.model", "") or "",
+            "lang": _str(getattr(doc, "$.lang", "")) or "",
+            "model": _str(getattr(doc, "$.model", "")) or "",
             "keywords": json.loads(keywords_raw) if isinstance(keywords_raw, str) else keywords_raw,
         }
 

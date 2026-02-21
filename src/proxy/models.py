@@ -23,9 +23,11 @@ class ChatResponse(BaseModel):
 
     cached=True이면 Redis에서 반환된 캐시 히트 응답.
     latency_ms는 프록시 전체 처리 시간 (캐시 조회 포함).
+    tier: 캐시 티어 ('l1_hash' | 'l2_semantic' | None)
     """
 
     id: str
     content: str
     cached: bool
     latency_ms: float
+    tier: str | None = None

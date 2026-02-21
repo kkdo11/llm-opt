@@ -109,7 +109,8 @@ class TestSearch:
     def _make_search_result(self, score: str, content: str = "응답", lang: str = "ko") -> MagicMock:
         """Vector Search 결과 Mock 생성."""
         doc = MagicMock()
-        doc.score = score
+        # vec_score: KNN 별칭 (score는 redis-py 기본 점수 속성과 충돌하여 사용 불가)
+        setattr(doc, "vec_score", score)
         # getattr(doc, "$.content") 접근 패턴 대응
         setattr(doc, "$.content", content)
         setattr(doc, "$.lang", lang)
