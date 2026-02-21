@@ -73,7 +73,9 @@ llm-opt/
 
 ## 현재 진행 상황
 - docs/PHASE_TRACKER.md 참조
-- Phase 1→2→3→4→5 순차 진행 중
+- **Phase 1 완료**: Redis Hash Cache, Hit 50%, API 호출 50% 감소 (실측)
+- **Phase 2 완료**: Semantic Cache (HNSW) + Validation Layer, Threshold 실험 완료
+- **다음**: Phase 3 — 출력 토큰 예측 + 사용자 할당량
 
 ## 자주 쓰는 명령어
 ```bash
@@ -98,7 +100,7 @@ docker compose down
 
 ## Phase별 핵심 기술 요소
 - Phase 1: FastAPI Proxy + Redis Hash Cache + Prometheus
-- Phase 2: SentenceTransformer(all-MiniLM-L6-v2) + Redis Vector Search(HNSW) + Validation Layer
+- Phase 2: SentenceTransformer(paraphrase-multilingual-MiniLM-L12-v2) + Redis Vector Search(HNSW) + Validation Layer
 - Phase 3: 출력 토큰 예측 + Streaming 모니터링 + 사용자 할당량
 - Phase 4: Custom Metrics Exporter + HPA(이동평균) + k6 부하 테스트
 - Phase 5: Grafana 대시보드 + 실시간 비용 계산
