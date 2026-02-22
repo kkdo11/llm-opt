@@ -21,7 +21,13 @@ from src.proxy.main import app
 
 @pytest.fixture
 def mock_cache() -> MagicMock:
-    """RedisCache mock 객체."""
+    """RedisCache mock 객체.
+
+    Phase 3: _quota_tracker도 None으로 초기화하여 이전 lifespan의
+    Redis 클라이언트가 잔류하는 event loop mismatch를 방지한다.
+    """
+    import src.proxy.main as proxy_main
+    proxy_main._quota_tracker = None  # lifespan 잔류 상태 격리
     cache = MagicMock(spec=RedisCache)
     cache.get = AsyncMock(return_value=None)  # 기본: 캐시 미스
     cache.set = AsyncMock()

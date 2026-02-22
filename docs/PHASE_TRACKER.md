@@ -5,7 +5,7 @@
 
 ---
 
-## 현재 상태: Phase 2 완료 (구현 + Threshold 실험 + 보완)
+## 현재 상태: Phase 3 완료 (구현 완료, 실 Ollama 측정 미완)
 
 ---
 
@@ -345,35 +345,85 @@ A: 의미 유사 질문이 동일 캐시 응답을 재사용한다면,
 
 **가설:** 출력 토큰 예측으로 비용 폭탄 사전 차단 가능
 
-**상태:** ⬜ 시작 전
+**상태:** ✅ 구현 완료 (2026-02-22)
 
 ### 구현 체크리스트
 
-- [ ] 출력 토큰 예측 모델
-  - [ ] 질문 유형별 패턴 정의
-  - [ ] 비용 계산 로직 (입력+출력 통합)
-- [ ] Response Streaming 모니터링
-  - [ ] 실시간 출력 토큰 카운팅
-  - [ ] 예측치 150% 초과 시 중단 로직
-- [ ] 사용자별 월간 할당량
-  - [ ] Redis 기반 토큰 사용량 추적
-  - [ ] 80% 경고, 100% 차단
+- [x] 출력 토큰 예측 모델 (`src/proxy/cost/token_predictor.py`)
+  - [x] 질문 유형별 패턴 정의 (VERY_LONG/LONG/MEDIUM/SHORT)
+  - [x] Rule-based 키워드 분류 (ML 없이 단순 구현)
+  - [x] estimate_tokens(): UTF-8 바이트 / 4 추정
+- [x] 비용 계산 로직 (`src/proxy/cost/cost_calculator.py`)
+  - [x] 입력+출력 통합 비용 계산 (USD)
+  - [x] 환경변수 단가 오버라이드 지원
+  - [x] 캐시 히트 cost_usd=0.0
+- [x] Response Streaming 모니터링 (`main.py` 확장)
+  - [x] SSE 형식 StreamingResponse (`data: {...}\n\n`)
+  - [x] 실시간 출력 토큰 카운팅 (누적 텍스트 → estimate_tokens)
+  - [x] 예측치 150% 초과 시 "[TRUNCATED]" 추가 후 중단
+  - [x] 캐시 히트 → SSE wrapping 반환
+- [x] 사용자별 월간 할당량 (`src/proxy/rate_limit/quota_tracker.py`)
+  - [x] Redis key: `llm:quota:{user_id}:{YYYYMM}`
+  - [x] INCRBY + EXPIREAT (월말 자동 만료)
+  - [x] 80% → WARNING, 100% → EXCEEDED (HTTP 429)
+  - [x] 캐시 히트는 차감 없음
+- [x] 단위 테스트 107개 통과 (신규 34개 포함)
+  - [x] test_token_predictor.py: 20개 테스트
+  - [x] test_quota_tracker.py: 14개 테스트
+- [x] models.py 확장: `user_id`, `tokens_used`, `cost_usd` 필드 추가
+- [x] PHASE_TRACKER.md 업데이트
 
 ### 성공 기준
 
-- [ ] 비용 폭탄 차단율 > 95%
-- [ ] 평균 요청당 비용 30% 이상 감소
+- [ ] 비용 폭탄 차단율 > 95%  ← 실 Ollama 스트리밍 연동 측정 필요
+- [ ] 평균 요청당 비용 30% 이상 감소  ← 실측 필요
+
+### 설계 결정 (Phase 3)
+
+| 결정 | 대안 | 이유 |
+|------|------|------|
+| Rule-based 토큰 예측 | ML 모델 | 오버엔지니어링. 150% 임계값 차단이 목표; 정확도보다 단순성 |
+| tiktoken 미사용 | tiktoken 추가 | Qwen tokenizer ≠ tiktoken; ±30% 추정이 150% 임계에 충분 |
+| 캐시 히트 quota 차감 없음 | 항상 차감 | 캐시 히트는 LLM 비용 없음. 할당량 = GPU/API 실비용 기준 |
+| SSE 형식 스트리밍 | WebSocket | OpenAI API 호환 (단방향 스트림에 적합) |
 
 ### 실제 결과
 
 ```
-(Phase 3 완료 후 실측치 기록)
+[예상치 — 실 Ollama 스트리밍 측정 전]
+구현 완료 항목:
+  - 토큰 예측: SHORT=150 / MEDIUM=400 / LONG=800 / VERY_LONG=1200 tokens
+  - 비용 계산: GPT-3.5 기준 input $0.0005/1K, output $0.0015/1K
+  - 할당량 차단: Redis INCRBY + EXPIREAT (월말 자동 초기화)
+  - 스트리밍 중단: 예측 상한 × 1.5 초과 시 [TRUNCATED]
+
+[미측정 항목]
+  - 실제 비용 폭탄 차단율 (실 Ollama 스트리밍 필요)
+  - 토큰 추정 오차율 (UTF-8 기반 ±30% 예상, 실측 미완)
 ```
 
 ### 면접 포인트 (Phase 3)
 
 ```
-(Phase 3 완료 후 정리)
+Q: 왜 tiktoken 대신 UTF-8 바이트 / 4를 사용했나요?
+A: Qwen2.5는 자체 tokenizer를 사용하여 tiktoken과 토큰 경계가 다름.
+   UTF-8 바이트 / 4는 ±30% 오차지만, 150% 임계값을 사용하므로
+   오차 허용 범위가 충분히 넓어 과도한 의존성 추가 없이 단순 구현.
+
+Q: 스트리밍 중 토큰 초과를 어떻게 감지하나요?
+A: SSE 청크를 받을 때마다 누적 텍스트의 estimate_tokens()를 계산.
+   predicted_max × 1.5를 초과하면 "[TRUNCATED]" 추가 후 break.
+   비용 폭탄의 정의 = 예측 상한의 150% 초과 응답.
+
+Q: 캐시 히트 시 왜 할당량을 차감하지 않나요?
+A: 할당량의 목적은 GPU/API 실비용 제어. 캐시 히트는 LLM 추론 없음.
+   할당량 = "실제로 쓴 컴퓨팅 비용" 기준. 캐시 효율이 높을수록
+   사용자는 더 많은 "유효 요청"을 할당량 내에서 처리할 수 있음.
+
+Q: 월간 할당량 초기화를 어떻게 자동화했나요?
+A: Redis의 EXPIREAT을 사용하여 월말 마지막 날 23:59:59로 만료를 설정.
+   calendar.monthrange()로 월마다 다른 마지막 날(28/29/30/31)을 계산.
+   다음 달 첫 요청 시 키가 없으면 0부터 시작 → INCRBY가 새 키 생성.
 ```
 
 ---
@@ -481,6 +531,10 @@ A: 의미 유사 질문이 동일 캐시 응답을 재사용한다면,
 | 2026-02-22 | 2 | KNN k=1 → k=3 | k=1 유지 | 구조 유사 원본 잘못 매칭 방지; 상위 3개 후보 중 Validation 통과 첫 번째 선택 |
 | 2026-02-22 | 2 | 쿼리 정규화 (normalizer.py) | 정규화 없이 임베딩 | 한글↔영어 기술 용어 혼용으로 임베딩 유사도 저하; 양방향 정규화로 해결 |
 | 2026-02-22 | 2 | normalize_query 후 langdetect | 원본 쿼리 langdetect | 영어 기술 용어 포함 쿼리를 langdetect가 오인식 (et/vi 반환); 정규화 후 감지로 정확성 확보 |
+| 2026-02-22 | 3 | Rule-based 토큰 예측 | ML 모델 | 오버엔지니어링; 150% 임계값 차단이 목표라 정확도보다 단순성 우선 |
+| 2026-02-22 | 3 | UTF-8 바이트/4 토큰 추정 | tiktoken | Qwen tokenizer ≠ tiktoken; ±30% 오차가 150% 임계에 충분 |
+| 2026-02-22 | 3 | 캐시 히트 quota 차감 없음 | 항상 차감 | 캐시 히트는 LLM 비용 없음; 할당량=GPU/API 실비용 기준 |
+| 2026-02-22 | 3 | SSE 스트리밍 | WebSocket | OpenAI API 호환 단방향 스트림에 적합; 추가 인프라 불필요 |
 
 ---
 

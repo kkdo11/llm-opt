@@ -74,8 +74,10 @@ llm-opt/
 ## 현재 진행 상황
 - docs/PHASE_TRACKER.md 참조
 - **Phase 1 완료**: Redis Hash Cache, Hit 50%, API 호출 50% 감소 (실측)
-- **Phase 2 완료**: Semantic Cache (HNSW) + Validation Layer, Threshold 실험 완료
-- **다음**: Phase 3 — 출력 토큰 예측 + 사용자 할당량
+- **Phase 2 완료**: Semantic Cache (HNSW) + Validation Layer, Hit 66.7%, FP 0% (실측)
+- **Phase 3 완료**: 토큰 예측 + 비용 계산 + 할당량 추적 + SSE 스트리밍 (2026-02-22)
+- **다음**: Phase 4 — Kubernetes 배포 + Custom Metrics + HPA + k6 부하 테스트
+- **세션 컨텍스트**: .claude/SESSION_STATE.md 참조
 
 ## 자주 쓰는 명령어
 ```bash
