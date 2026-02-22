@@ -106,83 +106,127 @@ class TestEnsureIndex:
 
 
 class TestSearch:
-    def _make_search_result(self, score: str, content: str = "응답", lang: str = "ko") -> MagicMock:
-        """Vector Search 결과 Mock 생성."""
+    def _make_doc(self, score: str, content: str = "응답", lang: str = "ko") -> MagicMock:
+        """Vector Search 단일 Document Mock 생성."""
         doc = MagicMock()
         # vec_score: KNN 별칭 (score는 redis-py 기본 점수 속성과 충돌하여 사용 불가)
         setattr(doc, "vec_score", score)
-        # getattr(doc, "$.content") 접근 패턴 대응
         setattr(doc, "$.content", content)
         setattr(doc, "$.lang", lang)
         setattr(doc, "$.model", "qwen2.5:14b")
         setattr(doc, "$.keywords", json.dumps(["파이썬"]))
+        return doc
 
+    def _make_search_result(self, score: str, content: str = "응답", lang: str = "ko") -> MagicMock:
+        """Vector Search 결과 Mock 생성 (단일 후보)."""
         result = MagicMock()
-        result.docs = [doc]
+        result.docs = [self._make_doc(score, content, lang)]
+        return result
+
+    def _make_multi_search_result(self, docs: list[MagicMock]) -> MagicMock:
+        """Vector Search 결과 Mock 생성 (복수 후보)."""
+        result = MagicMock()
+        result.docs = docs
         return result
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_no_results(
+    async def test_returns_empty_when_no_results(
         self, vector_cache: VectorCache, mock_redis: AsyncMock
     ) -> None:
-        """검색 결과 없으면 None을 반환해야 한다."""
+        """검색 결과 없으면 빈 리스트를 반환해야 한다."""
         result_mock = MagicMock()
         result_mock.docs = []
         mock_redis.ft().search = AsyncMock(return_value=result_mock)
 
         result = await vector_cache.search(make_embedding())
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
-    async def test_returns_none_below_threshold(
+    async def test_returns_empty_below_threshold(
         self, vector_cache: VectorCache, mock_redis: AsyncMock
     ) -> None:
-        """유사도(1-distance)가 threshold 미만이면 None을 반환해야 한다."""
+        """모든 후보가 threshold 미만이면 빈 리스트를 반환해야 한다."""
         # distance=0.20 → similarity=0.80 < 0.85
         mock_redis.ft().search = AsyncMock(
             return_value=self._make_search_result(score="0.20")
         )
         result = await vector_cache.search(make_embedding())
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
-    async def test_returns_tuple_above_threshold(
+    async def test_returns_list_above_threshold(
         self, vector_cache: VectorCache, mock_redis: AsyncMock
     ) -> None:
-        """유사도가 threshold 이상이면 (content, similarity, metadata) 반환해야 한다."""
+        """threshold 이상이면 (content, similarity, metadata) 리스트를 반환해야 한다."""
         # distance=0.05 → similarity=0.95 >= 0.85
         mock_redis.ft().search = AsyncMock(
             return_value=self._make_search_result(score="0.05", content="캐시된 응답")
         )
         result = await vector_cache.search(make_embedding())
 
-        assert result is not None
-        content, similarity, metadata = result
+        assert len(result) == 1
+        content, similarity, metadata = result[0]
         assert content == "캐시된 응답"
         assert abs(similarity - 0.95) < 0.001
         assert "lang" in metadata
         assert "keywords" in metadata
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_search_error(
+    async def test_returns_empty_on_search_error(
         self, vector_cache: VectorCache, mock_redis: AsyncMock
     ) -> None:
-        """Vector Search 실패 시 예외 대신 None을 반환해야 한다."""
+        """Vector Search 실패 시 예외 대신 빈 리스트를 반환해야 한다."""
         mock_redis.ft().search = AsyncMock(side_effect=Exception("connection error"))
         result = await vector_cache.search(make_embedding())
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_threshold_boundary_exact(
         self, vector_cache: VectorCache, mock_redis: AsyncMock
     ) -> None:
-        """threshold 정확히 같은 값(0.85)은 히트로 처리해야 한다."""
+        """threshold 정확히 같은 값(0.85)은 후보에 포함해야 한다."""
         # distance=0.15 → similarity=0.85
         mock_redis.ft().search = AsyncMock(
             return_value=self._make_search_result(score="0.15")
         )
         result = await vector_cache.search(make_embedding())
-        assert result is not None
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_returns_multiple_candidates_above_threshold(
+        self, vector_cache: VectorCache, mock_redis: AsyncMock
+    ) -> None:
+        """threshold 이상인 복수 후보를 모두 반환해야 한다 (KNN k=3)."""
+        # doc1: sim=0.95 (threshold 이상), doc2: sim=0.87 (이상), doc3: sim=0.78 (미만)
+        docs = [
+            self._make_doc("0.05", "응답1"),  # sim=0.95
+            self._make_doc("0.13", "응답2"),  # sim=0.87
+            self._make_doc("0.22", "응답3"),  # sim=0.78 → 제외
+        ]
+        mock_redis.ft().search = AsyncMock(
+            return_value=self._make_multi_search_result(docs)
+        )
+        result = await vector_cache.search(make_embedding())
+
+        assert len(result) == 2
+        assert result[0][0] == "응답1"  # 유사도 높은 순
+        assert result[1][0] == "응답2"
+
+    @pytest.mark.asyncio
+    async def test_stops_at_first_below_threshold(
+        self, vector_cache: VectorCache, mock_redis: AsyncMock
+    ) -> None:
+        """threshold 미만 후보 이후는 순회를 중단해야 한다 (vec_score 정렬 보장)."""
+        # doc1: sim=0.78 (미만) → break → doc2는 확인하지 않음
+        docs = [
+            self._make_doc("0.22", "응답1"),  # sim=0.78 → 미만
+            self._make_doc("0.05", "응답2"),  # sim=0.95 → 도달 안 함
+        ]
+        mock_redis.ft().search = AsyncMock(
+            return_value=self._make_multi_search_result(docs)
+        )
+        result = await vector_cache.search(make_embedding())
+        assert result == []
 
 
 # ---------------------------------------------------------------------------

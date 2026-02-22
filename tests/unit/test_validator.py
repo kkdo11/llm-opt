@@ -7,6 +7,7 @@ PROJECT_CONTEXT.md의 3가지 케이스를 직접 검증한다.
 import pytest
 
 from src.proxy.validation.validator import (
+    NETWORK_PROTOCOLS,
     SemanticValidator,
     ValidationResult,
     extract_keywords,
@@ -132,6 +133,28 @@ class TestTechKeywordValidation:
         )
         assert result.passed is False
 
+    def test_different_protocol_fails(self, validator: SemanticValidator) -> None:
+        """네트워크 프로토콜이 다르면 실패해야 한다 (Threshold 실험 미커버 케이스)."""
+        result = validator.validate_tech_keywords(
+            "TCP와 UDP의 차이점을 설명해줘", ["http", "https"]
+        )
+        assert result.passed is False
+        assert "tech_keyword_mismatch" in result.reason
+
+    def test_same_protocol_passes(self, validator: SemanticValidator) -> None:
+        """같은 프로토콜 키워드는 통과해야 한다."""
+        result = validator.validate_tech_keywords(
+            "HTTP와 HTTPS의 차이점은?", ["http", "https"]
+        )
+        assert result.passed is True
+
+    def test_protocol_and_language_combined_fails(self, validator: SemanticValidator) -> None:
+        """프로토콜 + 프로그래밍 언어 조합이 불일치하면 실패해야 한다."""
+        result = validator.validate_tech_keywords(
+            "python으로 tcp 소켓 구현", ["java", "tcp"]
+        )
+        assert result.passed is False
+
 
 # ---------------------------------------------------------------------------
 # extract_keywords
@@ -163,6 +186,16 @@ class TestExtractKeywords:
         assert "파이썬" in keywords
         assert "3.11" in keywords
         assert "2024" in keywords
+
+    def test_extracts_network_protocol(self) -> None:
+        keywords = extract_keywords("TCP와 UDP의 차이점을 설명해줘")
+        assert "tcp" in keywords
+        assert "udp" in keywords
+
+    def test_extracts_http_protocol(self) -> None:
+        keywords = extract_keywords("HTTP와 HTTPS의 차이점은?")
+        assert "http" in keywords
+        assert "https" in keywords
 
 
 # ---------------------------------------------------------------------------
