@@ -36,6 +36,16 @@ PROGRAMMING_LANGUAGES: frozenset[str] = frozenset({
     "sql",
 })
 
+# 네트워크 프로토콜 키워드 (소문자 통일)
+# Threshold 실험에서 발견된 미커버 케이스: "TCP/UDP 차이"와 "HTTP/HTTPS 차이"가
+# PROGRAMMING_LANGUAGES 필터를 통과해 FP 발생 → 별도 집합으로 관리
+NETWORK_PROTOCOLS: frozenset[str] = frozenset({
+    "tcp", "udp", "http", "https",
+    "grpc", "websocket", "ws",
+    "mqtt", "ftp", "smtp",
+    "dns", "ssl", "tls",
+})
+
 # 연도: 1900~2099
 # re.ASCII: 한국어 "년" 등이 \w로 인식되는 유니코드 모드 방지
 # (?:19|20): 비캡처 그룹 → findall이 전체 매치 "2024" 반환 (캡처 그룹이면 "20"만 반환됨)
@@ -164,9 +174,10 @@ class SemanticValidator:
     def validate_tech_keywords(
         self, query_text: str, cached_keywords: list[str]
     ) -> ValidationResult:
-        """프로그래밍 언어 등 핵심 기술 키워드 일치를 검사한다.
+        """프로그래밍 언어 및 네트워크 프로토콜 키워드 일치를 검사한다.
 
         Case 1 방지: "파이썬 정렬" vs "자바 정렬" → 프로그래밍 언어 다름 → Miss
+        프로토콜 방지: "TCP/UDP 차이" vs "HTTP/HTTPS 차이" → 프로토콜 다름 → Miss
 
         Args:
             query_text: 현재 쿼리
@@ -176,18 +187,25 @@ class SemanticValidator:
             기술 키워드가 불일치하면 passed=False
         """
         query_lower = query_text.lower()
-        query_langs = {lang for lang in PROGRAMMING_LANGUAGES if lang in query_lower}
+        cached_text = " ".join(k.lower() for k in cached_keywords)
 
-        if not query_langs:
+        query_tech = (
+            {lang for lang in PROGRAMMING_LANGUAGES if lang in query_lower}
+            | {proto for proto in NETWORK_PROTOCOLS if proto in query_lower}
+        )
+
+        if not query_tech:
             return ValidationResult(passed=True, reason="no_tech_keyword_in_query")
 
-        cached_text = " ".join(k.lower() for k in cached_keywords)
-        cached_langs = {lang for lang in PROGRAMMING_LANGUAGES if lang in cached_text}
+        cached_tech = (
+            {lang for lang in PROGRAMMING_LANGUAGES if lang in cached_text}
+            | {proto for proto in NETWORK_PROTOCOLS if proto in cached_text}
+        )
 
-        if query_langs != cached_langs:
+        if query_tech != cached_tech:
             return ValidationResult(
                 passed=False,
-                reason=f"tech_keyword_mismatch: query={query_langs}, cached={cached_langs}",
+                reason=f"tech_keyword_mismatch: query={query_tech}, cached={cached_tech}",
             )
         return ValidationResult(passed=True, reason="tech_keyword_match")
 
@@ -196,7 +214,7 @@ def extract_keywords(text: str) -> list[str]:
     """텍스트에서 Validation에 사용할 키워드를 추출한다.
 
     저장 시 호출되어 VectorCache 메타데이터로 함께 저장됨.
-    추출 대상: 연도, 버전, 프로그래밍 언어.
+    추출 대상: 연도, 버전, 프로그래밍 언어, 네트워크 프로토콜.
 
     Args:
         text: 원본 쿼리 텍스트
@@ -210,5 +228,6 @@ def extract_keywords(text: str) -> list[str]:
 
     text_lower = text.lower()
     keywords.extend(lang for lang in PROGRAMMING_LANGUAGES if lang in text_lower)
+    keywords.extend(proto for proto in NETWORK_PROTOCOLS if proto in text_lower)
 
     return list(set(keywords))

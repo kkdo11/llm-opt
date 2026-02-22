@@ -37,6 +37,7 @@ from redis.asyncio import Redis, from_url
 from sentence_transformers import SentenceTransformer
 
 from src.metrics.prometheus import api_calls_total, cache_hits_total, latency_seconds
+from src.proxy.cache.normalizer import normalize_query
 from src.proxy.cache.redis_cache import RedisCache, cache_key
 from src.proxy.cache.vector_cache import VectorCache
 from src.proxy.models import ChatRequest, ChatResponse
@@ -217,37 +218,48 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
     embedding: np.ndarray | None = None
 
     if _vector_cache is not None and _embedding_model is not None:
-        embedding = await _get_embedding(query_text)
-        search_result = await _vector_cache.search(embedding)
+        # 정규화: 영어↔한글 혼용 기술 용어를 통일하여 임베딩 유사도 향상
+        # 예: "파이썬 list와 tuple" → "파이썬 리스트와 튜플"
+        # 저장 시와 검색 시 모두 동일하게 적용해야 유사도 매칭이 성립
+        normalized_query = normalize_query(query_text)
+        embedding = await _get_embedding(normalized_query)
+        candidates = await _vector_cache.search(embedding)
 
-        if search_result is not None:
-            cached_content, similarity, cached_meta = search_result
+        if candidates:
+            # 정규화 후 langdetect: 영어 기술 용어("list", "tuple")가 포함되면
+            # langdetect가 오인식(et/vi 등)함 → 정규화로 한글로 변환 후 감지
+            # 예: "파이썬 list와 tuple" → langdetect='et' (오인식) → 정규화 후 'ko'
+            query_lang = await _detect_lang(normalized_query)
 
-            query_lang = await _detect_lang(query_text)
-            validation = _validator.validate(  # type: ignore[union-attr]
-                query_text=query_text,
-                query_lang=query_lang,
-                cached_metadata=cached_meta,
-                similarity=similarity,
-            )
-
-            if validation.passed:
-                elapsed = (time.perf_counter() - start_time) * 1000
-                cache_hits_total.labels(tier="l2_semantic").inc()
-                latency_seconds.labels(cache_status="hit").observe(elapsed / 1000)
-                _log_jsonl({
-                    "request_id": request_id, "event": "cache_hit",
-                    "tier": "l2_semantic", "similarity": round(similarity, 4),
-                    "latency_ms": round(elapsed, 2), "model": request.model,
-                })
-                # L1에도 저장: 동일 질문 재요청 시 L1 히트로 처리
-                await _cache.set(l1_key, cached_content)
-                return ChatResponse(
-                    id=request_id, content=cached_content,
-                    cached=True, latency_ms=round(elapsed, 2), tier="l2_semantic",
+            # KNN k=3 후보를 유사도 내림차순으로 순회 — Validation 통과 첫 번째 선택
+            for cached_content, similarity, cached_meta in candidates:
+                validation = _validator.validate(  # type: ignore[union-attr]
+                    query_text=query_text,
+                    query_lang=query_lang,
+                    cached_metadata=cached_meta,
+                    similarity=similarity,
                 )
-            else:
-                logger.debug("Validation 실패 (sim=%.4f): %s", similarity, validation.reason)
+
+                if validation.passed:
+                    elapsed = (time.perf_counter() - start_time) * 1000
+                    cache_hits_total.labels(tier="l2_semantic").inc()
+                    latency_seconds.labels(cache_status="hit").observe(elapsed / 1000)
+                    _log_jsonl({
+                        "request_id": request_id, "event": "cache_hit",
+                        "tier": "l2_semantic", "similarity": round(similarity, 4),
+                        "latency_ms": round(elapsed, 2), "model": request.model,
+                    })
+                    # L1에도 저장: 동일 질문 재요청 시 L1 히트로 처리
+                    await _cache.set(l1_key, cached_content)
+                    return ChatResponse(
+                        id=request_id, content=cached_content,
+                        cached=True, latency_ms=round(elapsed, 2), tier="l2_semantic",
+                    )
+                else:
+                    logger.debug(
+                        "Validation 실패 (sim=%.4f, 후보 %d개 중): %s",
+                        similarity, len(candidates), validation.reason,
+                    )
 
     # ── LLM 호출 ───────────────────────────────────────────────────────────
     llm_mode = os.getenv("LLM_MODE", "mock").lower()
@@ -257,8 +269,9 @@ async def chat_completions(request: ChatRequest) -> ChatResponse:
     await _cache.set(l1_key, content)
 
     # L2 저장 (임베딩 재사용)
+    # 저장 시도 langdetect도 정규화 후 적용 — 원본 쿼리에 영어 기술 용어 포함 시 오인식 방지
     if _vector_cache is not None and embedding is not None:
-        query_lang = await _detect_lang(query_text)
+        query_lang = await _detect_lang(normalize_query(query_text))
         keywords = extract_keywords(query_text)
         await _vector_cache.store(
             embedding=embedding,

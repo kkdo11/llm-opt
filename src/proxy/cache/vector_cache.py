@@ -3,7 +3,7 @@
 Redis Stack HNSW Index를 사용한 코사인 유사도 기반 시맨틱 캐시.
 
 설계:
-  - 임베딩 차원: 384 (all-MiniLM-L6-v2 고정)
+  - 임베딩 차원: 384 (paraphrase-multilingual-MiniLM-L12-v2)
   - 유사도 메트릭: COSINE
   - 키: llm:vec:{uuid} (Redis JSON)
   - 인덱스: llm_vector_idx (HNSW)
@@ -11,6 +11,10 @@ Redis Stack HNSW Index를 사용한 코사인 유사도 기반 시맨틱 캐시.
 COSINE 거리 주의:
   Redis Vector Search는 COSINE 거리(0=동일, 2=완전 반대)를 반환한다.
   유사도 = 1.0 - distance 로 변환 후 threshold와 비교한다.
+
+KNN k=3 설계 (Phase 2 보완):
+  k=1이면 문장 구조가 유사한 엉뚱한 원본이 매칭될 수 있다.
+  k=3으로 상위 후보를 반환하고 호출부에서 Validation을 순차 적용한다.
 """
 
 import json
@@ -86,23 +90,27 @@ class VectorCache:
 
     async def search(
         self, embedding: np.ndarray
-    ) -> tuple[str, float, dict] | None:
-        """코사인 유사도로 가장 유사한 캐시 항목을 검색한다.
+    ) -> list[tuple[str, float, dict]]:
+        """코사인 유사도로 상위 k개 캐시 후보를 반환한다.
+
+        KNN k=3으로 상위 후보를 가져온 뒤 threshold 이상인 항목만 반환한다.
+        호출부(main.py)에서 각 후보에 Validation을 순차 적용해 최종 히트를 결정한다.
 
         Args:
             embedding: 쿼리 임베딩 벡터 (shape: [384], dtype: float32)
 
         Returns:
-            (cached_content, similarity, metadata) 튜플.
-            threshold 미만이거나 결과 없으면 None.
+            threshold 이상인 (content, similarity, metadata) 리스트 (유사도 내림차순).
+            결과 없거나 오류 시 빈 리스트.
             metadata: {'lang': str, 'keywords': list[str], 'model': str}
         """
         query_vec = embedding.astype(np.float32).tobytes()
 
         # 주의: KNN 별칭을 'score'로 지정하면 redis-py Document의 기본 score(0) 속성과 충돌한다.
         # 'vec_score'로 별칭을 분리해 KNN 거리를 올바르게 파싱한다.
+        # KNN 3: k=1은 문장 구조 유사 원본에 잘못 매칭될 수 있으므로 3개 후보를 검색한다.
         query = (
-            Query("(*)=>[KNN 1 @embedding $vec AS vec_score]")
+            Query("(*)=>[KNN 3 @embedding $vec AS vec_score]")
             .sort_by("vec_score")
             .return_fields("vec_score", "$.content", "$.model", "$.lang", "$.keywords")
             .dialect(2)
@@ -114,22 +122,10 @@ class VectorCache:
             )
         except Exception as e:
             logger.warning("Vector Search 실패: %s", e)
-            return None
+            return []
 
         if not results.docs:
-            return None
-
-        doc = results.docs[0]
-        # COSINE 거리(0~2) → 유사도(0~1)
-        # decode_responses=False 환경에서는 bytes로 반환되므로 decode 처리
-        raw_score = getattr(doc, "vec_score", 1.0)
-        if isinstance(raw_score, bytes):
-            raw_score = raw_score.decode("utf-8")
-        similarity = 1.0 - float(raw_score)
-
-        if similarity < self.threshold:
-            logger.debug("유사도 %.4f < threshold %.2f → L2 미스", similarity, self.threshold)
-            return None
+            return []
 
         def _str(val: object) -> str:
             """bytes/str 값을 str로 통일."""
@@ -137,16 +133,30 @@ class VectorCache:
                 return val.decode("utf-8")
             return str(val) if val is not None else ""
 
-        content = _str(getattr(doc, "$.content", "")) or ""
-        keywords_raw = _str(getattr(doc, "$.keywords", "[]")) or "[]"
-        metadata = {
-            "lang": _str(getattr(doc, "$.lang", "")) or "",
-            "model": _str(getattr(doc, "$.model", "")) or "",
-            "keywords": json.loads(keywords_raw) if isinstance(keywords_raw, str) else keywords_raw,
-        }
+        candidates: list[tuple[str, float, dict]] = []
+        for doc in results.docs:
+            # COSINE 거리(0~2) → 유사도(0~1)
+            # decode_responses=False 환경에서는 bytes로 반환되므로 decode 처리
+            raw_score = getattr(doc, "vec_score", 1.0)
+            if isinstance(raw_score, bytes):
+                raw_score = raw_score.decode("utf-8")
+            similarity = 1.0 - float(raw_score)
 
-        logger.debug("L2 Vector Search 히트: 유사도=%.4f", similarity)
-        return content, similarity, metadata
+            if similarity < self.threshold:
+                # vec_score 오름차순 정렬이므로 이후 후보는 모두 threshold 미만
+                break
+
+            content = _str(getattr(doc, "$.content", "")) or ""
+            keywords_raw = _str(getattr(doc, "$.keywords", "[]")) or "[]"
+            metadata = {
+                "lang": _str(getattr(doc, "$.lang", "")) or "",
+                "model": _str(getattr(doc, "$.model", "")) or "",
+                "keywords": json.loads(keywords_raw) if isinstance(keywords_raw, str) else keywords_raw,
+            }
+            candidates.append((content, similarity, metadata))
+
+        logger.debug("L2 Vector Search 후보 %d개 (threshold=%.2f)", len(candidates), self.threshold)
+        return candidates
 
     async def store(
         self,
