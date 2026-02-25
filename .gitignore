@@ -16,3 +16,7 @@ scripts/results/
 # MLflow (Phase 5 이후 추가 예정)
 mlruns/
 mlflow.db
+
+# IDE
+.idea/
+.vscode/
