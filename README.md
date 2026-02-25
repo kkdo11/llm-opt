@@ -229,24 +229,26 @@ pytest tests/unit/test_validator.py -v
 
 ## 모니터링
 
-```bash
-# Prometheus + Redis 한 번에 기동
-docker compose up -d
+> Prometheus 메트릭 수집은 구현되어 있습니다.
+> Grafana 대시보드는 Phase 5에서 구현 예정입니다.
 
-# 메트릭 확인
-curl http://localhost:8000/metrics
-
-# Prometheus UI
-open http://localhost:9090
-```
-
-**수집 메트릭:**
+**수집 메트릭 (구현 완료):**
 
 | 메트릭 | 타입 | 설명 |
 |--------|------|------|
 | `llm_api_calls_total` | Counter | LLM 실제 호출 횟수 (캐시 미스) |
 | `llm_cache_hits_total{tier}` | Counter | 캐시 히트 횟수 (l1_hash / l2_semantic) |
 | `llm_request_latency_seconds{cache_status}` | Histogram | 요청 처리 시간 |
+
+```bash
+# Prometheus + Redis 기동
+docker compose up -d
+
+# 메트릭 엔드포인트 확인
+curl http://localhost:8000/metrics
+```
+
+**예정 (Phase 5):** Grafana 대시보드 — Cache Hit Ratio, 실시간 비용 누적, 레이턴시 분포 시각화
 
 ---
 
