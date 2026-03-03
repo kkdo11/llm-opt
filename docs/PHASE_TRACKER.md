@@ -5,7 +5,7 @@
 
 ---
 
-## 현재 상태: Phase A 완료 (멀티 백엔드 추상화 + Ollama 호환 엔드포인트 + 실 MindGraph 연결 검증 완료, 2026-03-03)
+## 현재 상태: Phase B 완료 (Neo4j 하이브리드 — PostgreSQL+Neo4j 동기화 + 2-hop RAG 확장, 2026-03-03)
 
 ---
 
@@ -567,6 +567,86 @@ A: 기존 스트리밍은 SSE 포맷(data: {...}\n\n)이고,
    Ollama 네이티브 스트리밍은 NDJSON({...}\n)입니다.
    _sse_to_ndjson() 변환 제너레이터로 기존 파이프라인 변경 없이
    포맷만 변환하여 응답합니다.
+```
+
+---
+
+## Phase B — MindGraph Neo4j 하이브리드 (mindgraph-ai 측 작업)
+
+**목표:** PostgreSQL 지식 그래프를 Neo4j에 동기화하고, 2-hop 탐색으로 RAG 컨텍스트 확장
+
+**상태:** ✅ 완료 (2026-03-03)
+
+### 구현 체크리스트
+
+- [x] `neo4j/entity/KnowledgeNode.java` — `@Node("KnowledgeNode")` (name, type)
+- [x] `neo4j/entity/Person.java` 삭제 (PoC 제거)
+- [x] `service/GraphService.java` 확장
+  - [x] `Neo4jClient` 주입
+  - [x] `syncToNeo4j()` — MERGE 기반 노드/관계 저장
+  - [x] `saveGraph()` 내 독립 try-catch — Neo4j 실패해도 PostgreSQL 커밋 보장
+- [x] `service/MindGraphService.java` 확장
+  - [x] `Neo4jClient` 주입
+  - [x] `searchNeo4jTwoHop()` — 1~2-hop Cypher 쿼리
+  - [x] `searchGraph()` — PostgreSQL + Neo4j 결과 병합
+  - [x] Neo4j 실패 시 graceful fallback (PostgreSQL만 반환)
+
+### 실측 결과 (2026-03-03)
+
+```
+환경: Neo4j 5.x (Docker), Spring Data Neo4j 6.x, Neo4jClient
+
+[저장 검증]
+입력: "Spring Boot는 Java 기반 웹 프레임워크다."
+PostgreSQL: Spring Boot(Project), Java(Technology) → 저장 ✅
+Neo4j:      Spring Boot --is based on--> Java       → MERGE ✅
+
+[2-hop 검색 검증]
+그래프: Docker → is → 컨테이너 가상화 기술
+        Spring Boot → is based on → Java
+
+POST /api/ask {"question": "Docker가 무엇인지 설명해줘"}
+→ PostgreSQL 1-hop + Neo4j 2-hop 컨텍스트 병합 ✅
+→ "[Neo4j 2-hop 확장 연관 개념]" 섹션 포함 응답
+```
+
+### 설계 결정 (Phase B)
+
+| 결정 | 대안 | 이유 |
+|------|------|------|
+| `Neo4jClient` 직접 사용 | `Neo4jRepository` + `@Query` | 복잡한 Cypher를 Java에서 제어; `@Query` 리턴 타입 제약 없음 |
+| `KnowledgeNodeNeo4jRepository` 삭제 | 유지 | `@DataJpaTest`에서 `neo4jTemplate` 미존재로 10개 테스트 실패; 실제 사용처 없음 |
+| MERGE (CREATE 대신) | MATCH + CREATE | 중복 없이 멱등 저장; 재처리 시 안전 |
+| 독립 try-catch in `saveGraph()` | `@TransactionalEventListener` | 구현 단순; Neo4j 장애가 PostgreSQL 롤백 유발하지 않음 |
+
+### 트러블슈팅 (Phase B)
+
+```
+[2026-03-03] @DataJpaTest 10개 실패 — "No bean named 'neo4jTemplate'"
+- 원인: KnowledgeNodeNeo4jRepository가 컴포넌트 스캔에 잡혀
+        neo4jTemplate 빈 요구 → @DataJpaTest 컨텍스트에 없음
+- 해결: KnowledgeNodeNeo4jRepository 삭제 (Neo4jClient 직접 사용으로 불필요)
+- 결과: 50개 테스트 전체 통과 ✅
+```
+
+### 면접 포인트 (Phase B)
+
+```
+Q: Neo4j와 PostgreSQL을 동시에 쓰는 이유는?
+A: PostgreSQL은 정형 데이터 저장과 벡터 검색에 최적화되어 있고,
+   Neo4j는 2-hop 이상의 관계 탐색에 강점이 있습니다.
+   지식 노드가 쌓일수록 Neo4j의 2-hop 탐색이 RAG 컨텍스트를 자동 확장합니다.
+   예: "Docker" 검색 → Docker→컨테이너→Kubernetes 경로를 한 쿼리로 가져옴.
+
+Q: Neo4j 장애 시 서비스가 중단되지 않나요?
+A: 독립 try-catch로 분리했습니다. Neo4j 실패 시 로그만 남기고
+   PostgreSQL 결과만 반환합니다. 데이터 유실도 없습니다 (다음 재시도 없음).
+   Neo4j는 "있으면 더 좋은" 추가 컨텍스트로 설계했습니다.
+
+Q: Neo4jRepository 대신 Neo4jClient를 쓴 이유는?
+A: 2-hop Cypher 쿼리에서 관계 속성(relation 텍스트)을 포함한 문자열을
+   직접 반환해야 해서 @Query의 리턴 타입 제약을 피하기 위해 Neo4jClient 사용.
+   MERGE 기반 저장도 Neo4jClient로 제어가 명확합니다.
 ```
 
 ---

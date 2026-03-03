@@ -7,8 +7,8 @@
 
 ## 현재 위치
 
-**브랜치**: `phase-2/semantic-cache`
-**현재 상태**: Phase A (MindGraph 연결) 완료. **다음 작업: Phase 4 (K8s+HPA) 또는 Phase B (Neo4j)**
+**브랜치**: `main`
+**현재 상태**: Phase B (Neo4j 하이브리드) 완료. **다음 작업: Phase 4 (K8s+HPA)**
 
 ---
 
@@ -31,7 +31,7 @@
 - SSE 스트리밍: 예측 상한 × 1.5 초과 시 [TRUNCATED]
 - 테스트: 107개 통과
 
-### Phase A ✅ (미커밋 — 커밋 필요)
+### Phase A ✅ (커밋 완료)
 **A-1: 멀티 백엔드 추상화**
 - `src/backends/base.py`: LLMBackend ABC + LLMResponse dataclass
 - `src/backends/ollama_backend.py`: Ollama OpenAI 호환 API (기존 로직 이관)
@@ -58,7 +58,13 @@
 
 ---
 
-## 커밋 필요한 파일
+### Phase B ✅ (mindgraph-ai 측 작업 — git 미설정 프로젝트)
+- `neo4j/entity/KnowledgeNode.java` 신규, `Person.java` 삭제
+- `GraphService.java`: `syncToNeo4j()` — Neo4jClient MERGE
+- `MindGraphService.java`: `searchNeo4jTwoHop()` — 2-hop Cypher
+- 실측: PostgreSQL+Neo4j 동기화 ✅, 2-hop RAG 확장 ✅, 50개 테스트 통과 ✅
+
+## 커밋 필요한 파일 (llm-opt)
 
 ```bash
 cd /home/kdw03/projects/llm-opt
@@ -90,20 +96,13 @@ git commit -m "feat: Phase A — 멀티 백엔드 추상화 + Ollama 호환 엔�
 
 ---
 
-## 다음 작업 선택지
+## 다음 작업: Phase 4 — K8s + Adaptive Scaling
 
-### 옵션 1: Phase 4 — K8s + Adaptive Scaling
 ```
 - Custom Metrics Exporter: Queue 길이 이동평균 → Prometheus Gauge
 - HPA: Scale Up 1분평균 > 20, Scale Down 5분평균 < 5
 - k6 부하 테스트: 정상/증가/피크/Spike/Soak 시나리오
-```
-
-### 옵션 2: Phase B — MindGraph Neo4j 하이브리드
-```
-- mindgraph-ai 측 작업
-- KnowledgeNode.java + KnowledgeRelationship.java (Person.java 교체)
-- 2-hop 그래프 탐색으로 RAG 컨텍스트 확장
+- 브랜치: phase-4/k8s
 ```
 
 ---
