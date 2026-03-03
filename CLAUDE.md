@@ -193,8 +193,8 @@ LLM_BACKEND=openai OPENAI_API_KEY=sk-... uvicorn src.proxy.main:app --reload --p
 # 개발 서버 (기존 방식, mock 모드)
 uvicorn src.proxy.main:app --reload --port 8000
 
-# 테스트 (107개, ~5초)
-pytest tests/ -v
+# 테스트 (142개)
+pytest tests/ -q
 pytest tests/unit/ -v --cov=src
 
 # Redis
@@ -202,7 +202,10 @@ docker compose up redis -d
 redis-cli ping
 
 # k6 부하 테스트
-k6 run tests/load/scenario_basic.js
+k6 run tests/load/scenario_baseline.js
+k6 run tests/load/scenario_ramp.js
+k6 run tests/load/scenario_spike.js
+k6 run tests/load/scenario_soak.js
 
 # Docker
 docker compose up --build
@@ -213,7 +216,7 @@ docker compose down
 - Phase 1: FastAPI Proxy + Redis Hash Cache + Prometheus ✅
 - Phase 2: SentenceTransformer + Redis Vector Search(HNSW) + Validation Layer ✅
 - Phase 3: 출력 토큰 예측 + Streaming 모니터링 + 사용자 할당량 ✅ (실측 미완)
-- Phase A: Ollama 호환 엔드포인트 + 멀티 백엔드 추상화 + MindGraph 연결
-- Phase B: MindGraph Neo4j 하이브리드 (mindgraph-ai 측)
-- Phase 4: Custom Metrics Exporter + HPA(이동평균) + k6 부하 테스트
-- Phase 5: Grafana 대시보드 + 실시간 비용 계산 (MindGraph 실 워크로드 기반)
+- Phase A: Ollama 호환 엔드포인트 + 멀티 백엔드 추상화 + MindGraph 연결 ✅
+- Phase B: MindGraph Neo4j 하이브리드 (mindgraph-ai 측) ✅
+- Phase 4: Custom Metrics Exporter + K8s HPA(이동평균) + k6 부하 테스트 ✅ (실 K8s 배포 미완)
+- Phase 5: Grafana 대시보드 + 실시간 비용 계산 ← 다음 작업
