@@ -5,7 +5,7 @@
 
 ---
 
-## 현재 상태: Phase 3 완료 (구현 완료, 실 Ollama 측정 미완)
+## 현재 상태: Phase A 완료 (멀티 백엔드 추상화 + Ollama 호환 엔드포인트 + 실 MindGraph 연결 검증 완료, 2026-03-03)
 
 ---
 
@@ -428,6 +428,149 @@ A: Redis의 EXPIREAT을 사용하여 월말 마지막 날 23:59:59로 만료를 
 
 ---
 
+## Phase A — MindGraph 연결 (멀티 백엔드 + Ollama 호환 엔드포인트)
+
+**목표:** MindGraph LangChain4j OllamaChatModel → LLM-OPT 프록시 연결
+
+**상태:** ✅ 완료 (2026-03-03)
+
+### 구현 체크리스트
+
+**A-1: 멀티 백엔드 추상화**
+- [x] `src/backends/base.py`: `LLMBackend` ABC + `LLMResponse` dataclass
+- [x] `src/backends/ollama_backend.py`: Ollama OpenAI 호환 API 호출 (기존 로직 이관)
+  - [x] `chat()`: 단일 응답, usage 없으면 estimate_tokens() 폴백
+  - [x] `chat_stream()`: SSE 청크, 예측 상한 150% 초과 시 `[TRUNCATED]`
+  - [x] `health_check()`: Ollama 서버 연결 확인
+- [x] `src/backends/openai_backend.py`: OpenAI API 백엔드 (선택적)
+  - [x] `chat()`: OpenAI 공식 엔드포인트, tiktoken 호환 usage
+  - [x] `chat_stream()`: 단일 응답 SSE 래핑 (TODO: 실제 스트리밍)
+  - [x] `health_check()`: `models.list()` 호출로 확인
+- [x] `main.py` 리팩터링
+  - [x] `_process_chat(request)` 함수 추출 (캐시/검증/비용 파이프라인)
+  - [x] `_llm_backend: LLMBackend | None = None` 전역 변수 추가
+  - [x] lifespan에서 `LLM_BACKEND` 환경변수 보고 백엔드 초기화 DI
+  - [x] `chat_completions` → `_process_chat()` 위임으로 단순화
+  - [x] `/health` 엔드포인트에 백엔드 정보 추가
+
+**A-2: Ollama 호환 엔드포인트**
+- [x] `src/proxy/routes/ollama_compat.py`
+  - [x] Pydantic 모델: `OllamaMessage`, `OllamaChatRequest`, `OllamaChatResponse`
+  - [x] Pydantic 모델: `OllamaGenerateRequest`, `OllamaGenerateResponse`
+  - [x] `POST /api/chat`: Ollama→ChatRequest→`_process_chat()`→Ollama 포맷 변환
+  - [x] `POST /api/generate`: prompt→user 메시지→동일 파이프라인
+  - [x] `_sse_to_ndjson()`: SSE(`data: {...}\n\n`) → NDJSON(`{...}\n`) 변환
+  - [x] 스트리밍: `StreamingResponse` + `application/x-ndjson`
+  - [x] `app.include_router(ollama_router)` 등록
+
+**A-3: 테스트 및 회귀 확인**
+- [x] `tests/unit/test_backends.py`: 21개 테스트
+  - [x] `OllamaBackend.chat()` — 정상/usage없음/API오류
+  - [x] `OllamaBackend.chat_stream()` — SSE포맷/150%초과 TRUNCATED
+  - [x] `OllamaBackend.health_check()` — 성공/실패
+  - [x] `OpenAIBackend.chat()` — 정상/API오류
+  - [x] `OpenAIBackend.health_check()` — 성공
+- [x] `tests/unit/test_ollama_compat.py`: 11개 테스트
+  - [x] `POST /api/chat` — 캐시미스/캐시히트/모델명보존/422/멀티턴
+  - [x] `POST /api/chat` stream=True — NDJSON ContentType/마지막청크done=true/assistant role
+  - [x] `POST /api/generate` — 응답포맷/422/캐시히트
+- [x] 전체 128개 테스트 통과 (기존 107개 + 신규 21개)
+**A-3: 실 MindGraph 연결 검증**
+- [x] MindGraph `application.properties` chat-model base-url → `http://localhost:8000`
+- [x] `LangChainConfig.java` embedding base-url 분리 (`chatBaseUrl` / `embeddingBaseUrl`)
+  - 버그: `baseUrl` 하나를 chat/embedding 공용으로 사용 → embedding이 8000으로 잘못 호출
+  - 수정: `@Value("${langchain4j.ollama.embedding-model.base-url}")` 별도 필드 추가
+- [x] 실제 질문으로 LLM-OPT 로그에서 캐시 히트/미스 확인
+  - `POST /api/graph/extract` → 첫 호출: LLM 실제 호출 (5,510ms)
+  - 동일 텍스트 재전송: L1 Hash Cache 히트 (0.4~0.6ms)
+- [x] Redis 캐시 저장 확인 (`llm:cache:*` 5개, `llm:vec:*` 5개)
+
+### 성공 기준
+
+- [x] `/api/chat`, `/api/generate` 엔드포인트 동작
+- [x] 기존 L1→L2→LLM 파이프라인 재사용 (캐시/검증/비용 로직 변경 없음)
+- [x] 기존 107개 테스트 회귀 없음 (128개 전체 통과)
+- [x] 실 MindGraph 연결 시 캐시 히트 확인 (2026-03-03)
+
+### 설계 결정 (Phase A)
+
+| 결정 | 대안 | 이유 |
+|------|------|------|
+| `_process_chat()` 추출 | `/api/chat`에 복붙 | 캐시/검증/비용 로직 중복 방지; 단일 진입점 유지 |
+| Lazy import (`from src.proxy.main import _process_chat`) | 모듈 상단 import | `ollama_compat.py` ↔ `main.py` 순환 import 방지 |
+| `AsyncClient + ASGITransport` (비스트리밍 테스트) | `TestClient` | TestClient 리스판이 글로벌 mock을 덮어씌움; ASGI transport는 lifespan 없음 |
+| `from openai import AsyncOpenAI` 모듈 상단 위치 | 함수 내부 import | `patch("src.backends.ollama_backend.AsyncOpenAI")` 동작 요건 |
+| SSE → NDJSON 변환 (`_sse_to_ndjson`) | 백엔드에서 직접 NDJSON 생성 | 기존 SSE 파이프라인 변경 없이 포맷만 변환; 관심사 분리 |
+
+### 실측 결과 (Phase A-3, 2026-03-03)
+
+```
+환경: Qwen 2.5 14B (RTX 4080 Super), Redis Stack 7.4, MindGraph Spring Boot
+테스트: POST /api/graph/extract → "Docker는 컨테이너 가상화 기술이다."
+
+[캐시 미스 (첫 번째 호출)]
+- event: llm_call
+- latency_ms: 5,510
+- Ollama가 지식 추출 수행, 결과를 Redis에 저장
+
+[캐시 히트 (동일 텍스트 재전송)]
+- event: cache_hit, tier: l1_hash
+- latency_ms: 0.43 ~ 0.62
+- 20,000x 이상 속도 향상
+
+[라우팅 검증]
+- Chat 요청: MindGraph(8080) → LLM-OPT(8000) /api/chat → Ollama(11434) ✅
+- Embedding 요청: MindGraph(8080) → Ollama(11434) /api/embeddings (프록시 우회) ✅
+
+[Redis 상태]
+- llm:cache:* 5개 (L1 Hash Cache)
+- llm:vec:* 5개 (L2 Vector Cache, HNSW)
+- llm:quota:anonymous:202603 (월간 할당량 추적)
+```
+
+### 트러블슈팅 (Phase A)
+
+```
+[2026-03-03] b"한국어" SyntaxError
+- 문제: 테스트 코드에서 bytes literal에 비ASCII 문자 포함
+- 해결: "한국어".encode("utf-8") 사용
+
+[2026-03-03] patch("module.AsyncOpenAI") AttributeError
+- 문제: AsyncOpenAI를 함수 내부에서 import → patch 대상 네임스페이스에 없음
+- 해결: 모듈 상단으로 import 이동 → patch 정상 작동
+
+[2026-03-03] TestClient lifespan이 mock_cache 덮어씌움
+- 문제: proxy_main._cache = mock_cache 설정 후 TestClient(app)이 lifespan 실행
+         → Redis 연결 시도 → ConnectionError
+- 해결 1 (비스트리밍): AsyncClient + ASGITransport (lifespan 없음)
+- 해결 2 (스트리밍): with TestClient(app) 블록 내부에서 mock 재주입
+         + proxy_main._quota_tracker = None 추가
+```
+
+### 면접 포인트 (Phase A)
+
+```
+Q: MindGraph와 LLM-OPT를 어떻게 연결했나요?
+A: LangChain4j OllamaChatModel이 Ollama 네이티브 포맷(/api/chat)을 사용하므로
+   LLM-OPT에 Ollama 호환 엔드포인트를 추가했습니다.
+   핵심은 기존 L1→L2→LLM 파이프라인을 _process_chat()으로 추출하여
+   /v1/chat/completions와 /api/chat 양쪽에서 재사용한 것입니다.
+   MindGraph는 base-url 한 줄만 변경하면 프록시를 경유합니다.
+
+Q: 백엔드 추상화를 왜 했나요?
+A: 로컬 Qwen(Ollama)으로 개발하고 필요 시 OpenAI로 전환 가능하게 설계했습니다.
+   LLMBackend ABC를 정의하고 환경변수 LLM_BACKEND=openai로 DI 전환됩니다.
+   캐시/검증/비용 레이어는 백엔드와 완전히 분리되어 있습니다.
+
+Q: SSE와 NDJSON의 차이는?
+A: 기존 스트리밍은 SSE 포맷(data: {...}\n\n)이고,
+   Ollama 네이티브 스트리밍은 NDJSON({...}\n)입니다.
+   _sse_to_ndjson() 변환 제너레이터로 기존 파이프라인 변경 없이
+   포맷만 변환하여 응답합니다.
+```
+
+---
+
 ## Phase 4 — Kubernetes 배포 및 Adaptive Scaling
 
 **가설:** 이동 평균 기반 HPA로 안정적인 Auto-scaling 가능
@@ -535,6 +678,10 @@ A: Redis의 EXPIREAT을 사용하여 월말 마지막 날 23:59:59로 만료를 
 | 2026-02-22 | 3 | UTF-8 바이트/4 토큰 추정 | tiktoken | Qwen tokenizer ≠ tiktoken; ±30% 오차가 150% 임계에 충분 |
 | 2026-02-22 | 3 | 캐시 히트 quota 차감 없음 | 항상 차감 | 캐시 히트는 LLM 비용 없음; 할당량=GPU/API 실비용 기준 |
 | 2026-02-22 | 3 | SSE 스트리밍 | WebSocket | OpenAI API 호환 단방향 스트림에 적합; 추가 인프라 불필요 |
+| 2026-03-03 | A | `_process_chat()` 추출 | 핸들러별 복붙 | 캐시/검증/비용 로직 중복 방지; `/api/chat`과 `/v1/chat/completions` 단일 파이프라인 |
+| 2026-03-03 | A | Lazy import in `ollama_compat.py` | 모듈 상단 import | `main.py` ↔ `ollama_compat.py` 순환 import 방지 |
+| 2026-03-03 | A | `AsyncClient + ASGITransport` (비스트리밍 테스트) | `TestClient` | lifespan 없이 mock 주입; TestClient는 lifespan 실행으로 mock 덮어씀 |
+| 2026-03-03 | A | Embedding 모델 Ollama 직접 호출 유지 | LLM-OPT 프록시 경유 | 입력이 매번 다른 원문이므로 캐싱 이점 없음; `/api/embeddings` 엔드포인트 추가 불필요 |
 
 ---
 
@@ -550,3 +697,7 @@ A: Redis의 EXPIREAT을 사용하여 월말 마지막 날 23:59:59로 만료를 
 | 2026-02-21 | 2 | all-MiniLM-L6-v2 한국어 paraphrase 유사도 낮음 | 영어 최적화 모델 — 한국어 paraphrase 0.32~0.77 | `paraphrase-multilingual-MiniLM-L12-v2`로 교체 → 0.87~0.95 | ⬜ |
 | 2026-02-22 | 2 | langdetect 오인식 (L2 MISS) | "파이썬 list와 tuple 차이가 뭐야" → langdetect='et'(에스토니아어) | normalize_query 적용 후 langdetect → 'ko' 정상 인식; 검색 시 validate_language 통과 | ⬜ |
 | 2026-02-22 | 2 | 워밍 중 원본 흡수 현상 | threshold=0.75에서 "~의 차이점을 설명해줘" 패턴 원본끼리 sim=0.85+ | 모델 한계 확인; B방안(한국어 특화 임베딩) 미래 개선 과제로 기록 | ⬜ |
+| 2026-03-03 | A | `b"한국어"` SyntaxError | 테스트 bytes literal에 비ASCII 문자 | `"한국어".encode("utf-8")` 사용 | ✅ |
+| 2026-03-03 | A | `patch("module.AsyncOpenAI")` AttributeError | AsyncOpenAI가 함수 내부에서 import → 네임스페이스 없음 | 모듈 상단으로 import 이동 | ✅ |
+| 2026-03-03 | A | TestClient lifespan이 mock_cache 덮어씌움 (Redis ConnectionError) | `TestClient(app)` lifespan이 글로벌 _cache 초기화 | 비스트리밍: `AsyncClient + ASGITransport`; 스트리밍: with 블록 내부 mock 재주입 | ✅ |
+| 2026-03-03 | A | MindGraph embedding 요청이 LLM-OPT(8000)로 잘못 라우팅 → 404 | `LangChainConfig.java`에서 `@Value("${langchain4j.ollama.chat-model.base-url}")`를 chat/embedding 공용으로 사용 | `embeddingBaseUrl` 별도 필드 추가, `@Value("${langchain4j.ollama.embedding-model.base-url}")` 주입 | ✅ |
