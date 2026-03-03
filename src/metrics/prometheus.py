@@ -1,9 +1,15 @@
 """Prometheus 메트릭 정의.
 
 메트릭 목록:
-- api_calls_total: LLM 실제 호출 횟수 (캐시 미스 시 증가)
-- cache_hits_total: 캐시 히트 횟수 (tier 라벨: l1_hash)
-- latency_seconds: 요청 전체 응답 시간 히스토그램
+- api_calls_total:        LLM 실제 호출 횟수 (캐시 미스 시 증가)
+- cache_hits_total:       캐시 히트 횟수 (tier 라벨: l1_hash / l2_semantic)
+- latency_seconds:        요청 전체 응답 시간 히스토그램
+- llm_queue_depth:        현재 LLM 큐 깊이 (→ queue_metrics.py에서 정의)
+- llm_queue_depth_avg_1m: 1분 이동평균 (HPA Scale Up 기준)
+- llm_queue_depth_avg_5m: 5분 이동평균 (HPA Scale Down 기준)
+
+큐 관련 Gauge는 queue_metrics.py에서 정의되며,
+이 파일은 api_calls_total / cache_hits_total / latency_seconds만 정의한다.
 """
 
 from prometheus_client import Counter, Histogram

@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-opt-service
+  namespace: default
+  labels:
+    app: llm-opt
+spec:
+  selector:
+    app: llm-opt
+  # NodePort: 외부(MindGraph, k6)에서 직접 접근 가능
+  type: NodePort
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8000
+      targetPort: 8000
+      # nodePort 미지정 → K8s가 30000-32767 범위에서 자동 할당
+---
+# Prometheus가 메트릭을 수집하기 위한 ServiceMonitor (Prometheus Operator 사용 시)
+# Prometheus Operator 없는 경우 prometheus.yml의 static_configs에 직접 추가
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: llm-opt-monitor
+  namespace: default
+  labels:
+    app: llm-opt
+spec:
+  selector:
+    matchLabels:
+      app: llm-opt
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

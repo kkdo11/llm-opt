@@ -7,8 +7,8 @@
 
 ## 현재 위치
 
-**브랜치**: `main`
-**현재 상태**: Phase B (Neo4j 하이브리드) 완료. **다음 작업: Phase 4 (K8s+HPA)**
+**브랜치**: `phase-4/k8s`
+**현재 상태**: Phase 4 구현 완료 (K8s manifests + HPA + k6 + Custom Metrics). **다음 작업: Phase 5 (Grafana 대시보드)**
 
 ---
 
@@ -64,6 +64,15 @@
 - `MindGraphService.java`: `searchNeo4jTwoHop()` — 2-hop Cypher
 - 실측: PostgreSQL+Neo4j 동기화 ✅, 2-hop RAG 확장 ✅, 50개 테스트 통과 ✅
 
+### Phase 4 ✅ 구현 완료 (브랜치: phase-4/k8s)
+- `src/metrics/queue_metrics.py`: QueueMetricsCollector (enter/exit, 이동평균, Prometheus Gauge)
+- `src/metrics/prometheus.py`: 주석 업데이트
+- `src/proxy/main.py`: queue_metrics 통합 (lifespan start/stop, LLM 호출 enter/exit, /health 스냅샷)
+- `k8s/configmap.yaml`, `deployment.yaml`, `service.yaml`, `hpa.yaml`, `prometheus-adapter-config.yaml`
+- `tests/load/`: common.js, scenario_baseline.js, scenario_ramp.js, scenario_spike.js, scenario_soak.js
+- `tests/unit/test_queue_metrics.py`: 14개 통과, 전체 142개 통과
+- 실 K8s 배포 및 부하 테스트 측정은 미완 (설계 및 코드 완료)
+
 ## 커밋 필요한 파일 (llm-opt)
 
 ```bash
@@ -96,13 +105,17 @@ git commit -m "feat: Phase A — 멀티 백엔드 추상화 + Ollama 호환 엔�
 
 ---
 
-## 다음 작업: Phase 4 — K8s + Adaptive Scaling
+## 다음 작업: Phase 5 — Grafana 대시보드 + 실시간 비용 시각화
 
 ```
-- Custom Metrics Exporter: Queue 길이 이동평균 → Prometheus Gauge
-- HPA: Scale Up 1분평균 > 20, Scale Down 5분평균 < 5
-- k6 부하 테스트: 정상/증가/피크/Spike/Soak 시나리오
-- 브랜치: phase-4/k8s
+- Prometheus 메트릭 정의 보강 (비용 Counter, 토큰 Counter)
+- Grafana 대시보드 JSON (5개 패널)
+  - 패널 1: 실시간 비용 누적 (actual vs saved)
+  - 패널 2: Cache Hit Ratio (L1/L2 tier별)
+  - 패널 3: 비용 비교 (캐시 유/무)
+  - 패널 4: 레이턴시 분포 (P50/P95/P99)
+  - 패널 5: Pod Autoscaling (HPA replicas + queue depth)
+- 브랜치: phase-5/grafana
 ```
 
 ---

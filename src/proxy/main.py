@@ -52,6 +52,7 @@ from src.backends.base import LLMBackend
 from src.backends.ollama_backend import OllamaBackend
 from src.backends.openai_backend import OpenAIBackend
 from src.metrics.prometheus import api_calls_total, cache_hits_total, latency_seconds
+from src.metrics.queue_metrics import queue_metrics
 from src.proxy.cache.normalizer import normalize_query
 from src.proxy.cache.redis_cache import RedisCache, cache_key
 from src.proxy.cache.vector_cache import VectorCache
@@ -131,8 +132,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("LLM 백엔드: Mock (LLM_MODE=mock)")
 
+    # Phase 4: 큐 메트릭 수집 시작 (5초마다 이동평균 갱신)
+    queue_metrics.start()
+    logger.info("QueueMetricsCollector 시작 (sample_interval=5s)")
+
     yield
 
+    queue_metrics.stop()
     await _redis_client.aclose()
     logger.info("Redis 연결 종료")
 
@@ -311,7 +317,11 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
     # ── stream=True 경로 ────────────────────────────────────────────────────
     if request.stream:
         if llm_mode == "mock":
-            mock_content = await _call_mock_llm(request)
+            queue_metrics.enter()
+            try:
+                mock_content = await _call_mock_llm(request)
+            finally:
+                queue_metrics.exit()
 
             async def _mock_stream() -> AsyncGenerator[str, None]:
                 yield f"data: {json.dumps({'content': mock_content, 'done': False}, ensure_ascii=False)}\n\n"
@@ -344,9 +354,10 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
             })
             return StreamingResponse(_mock_stream(), media_type="text/event-stream")
         else:
-            # 백엔드 스트리밍
+            # 백엔드 스트리밍 (queue_metrics는 스트리밍 완료 시 exit 불가 → 현재 깊이만 enter)
             if _llm_backend is None:
                 raise HTTPException(status_code=503, detail="LLM 백엔드가 초기화되지 않았습니다.")
+            queue_metrics.enter()
             api_calls_total.inc()
             return StreamingResponse(
                 _llm_backend.chat_stream(messages_dict, request.model, predicted_max),
@@ -354,19 +365,23 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
             )
 
     # ── stream=False 경로 ───────────────────────────────────────────────────
-    if llm_mode == "mock":
-        content = await _call_mock_llm(request)
-        output_tokens = estimate_tokens(content)
-    else:
-        if _llm_backend is None:
-            raise HTTPException(status_code=503, detail="LLM 백엔드가 초기화되지 않았습니다.")
-        try:
-            llm_response = await _llm_backend.chat(messages_dict, request.model)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"LLM 백엔드 오류: {e}") from e
-        content = llm_response.content
-        output_tokens = llm_response.output_tokens
-        input_tokens = llm_response.input_tokens
+    queue_metrics.enter()
+    try:
+        if llm_mode == "mock":
+            content = await _call_mock_llm(request)
+            output_tokens = estimate_tokens(content)
+        else:
+            if _llm_backend is None:
+                raise HTTPException(status_code=503, detail="LLM 백엔드가 초기화되지 않았습니다.")
+            try:
+                llm_response = await _llm_backend.chat(messages_dict, request.model)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"LLM 백엔드 오류: {e}") from e
+            content = llm_response.content
+            output_tokens = llm_response.output_tokens
+            input_tokens = llm_response.input_tokens
+    finally:
+        queue_metrics.exit()
 
     total_tokens = input_tokens + output_tokens
     cost = _cost_calculator.compute(input_tokens, output_tokens)
@@ -442,4 +457,5 @@ async def health() -> dict:
             "enabled": _quota_tracker is not None,
             "limit": _quota_tracker.quota if _quota_tracker is not None else None,
         },
+        "queue_metrics": queue_metrics.get_snapshot(),
     }

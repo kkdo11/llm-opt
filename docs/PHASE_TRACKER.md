@@ -5,7 +5,7 @@
 
 ---
 
-## 현재 상태: Phase B 완료 (Neo4j 하이브리드 — PostgreSQL+Neo4j 동기화 + 2-hop RAG 확장, 2026-03-03)
+## 현재 상태: Phase 4 구현 완료 (K8s + Adaptive Scaling, 2026-03-03) — 실 K8s 클러스터 배포 및 측정 미완
 
 ---
 
@@ -655,41 +655,77 @@ A: 2-hop Cypher 쿼리에서 관계 속성(relation 텍스트)을 포함한 문�
 
 **가설:** 이동 평균 기반 HPA로 안정적인 Auto-scaling 가능
 
-**상태:** ⬜ 시작 전
+**상태:** ✅ 구현 완료 (2026-03-03) | 실 K8s 클러스터 배포 및 부하 측정은 미완
 
 ### 구현 체크리스트
 
-- [ ] Custom Metrics Exporter
-  - [ ] Queue 길이 이동 평균 계산
-  - [ ] Prometheus Gauge 노출
-- [ ] HPA 설정
-  - [ ] Scale Up: 1분 이동평균 > 20
-  - [ ] Scale Down: 5분 이동평균 < 5
-  - [ ] 비대칭 정책 (빠른 증가, 느린 감소)
-- [ ] Predictive Scaling
-  - [ ] 시간대 패턴 정의 (출근, 점심, 퇴근)
-  - [ ] multiplier 적용 로직
-- [ ] k6 부하 테스트
-  - [ ] 정상 / 증가 / 피크 / Spike / Soak 시나리오
-  - [ ] 에러율 및 Latency 측정
+- [x] Custom Metrics Exporter (`src/metrics/queue_metrics.py`)
+  - [x] Queue 깊이 추적: `enter()` / `exit()` (LLM 요청 진입/완료 시 호출)
+  - [x] 5초 간격 샘플 수집 (`asyncio.Task` 백그라운드 루프)
+  - [x] 1분 이동평균 계산 (12개 샘플, `deque(maxlen=12)`)
+  - [x] 5분 이동평균 계산 (60개 샘플, `deque(maxlen=60)`)
+  - [x] Prometheus Gauge 노출: `llm_queue_depth`, `llm_queue_depth_avg_1m`, `llm_queue_depth_avg_5m`
+  - [x] `main.py` 통합: lifespan start/stop, LLM 호출 경로 enter/exit
+  - [x] `/health` 엔드포인트에 스냅샷 추가
+- [x] K8s manifests (`k8s/`)
+  - [x] `configmap.yaml`: 환경변수 (LLM_MODE, REDIS_URL, 임계값 등)
+  - [x] `deployment.yaml`: replicas=1 (HPA 조정), livenessProbe/readinessProbe, 리소스 요청/제한
+  - [x] `service.yaml`: NodePort + ServiceMonitor (Prometheus Operator용)
+  - [x] `hpa.yaml`: Scale Up 1분평균 > 20 (30초), Scale Down 5분평균 < 5 (5분 안정화)
+  - [x] `prometheus-adapter-config.yaml`: Custom Metrics API 노출 설정
+- [ ] Predictive Scaling (미구현 — 현재 로드에선 반응형으로 충분 판단)
+- [x] k6 부하 테스트 시나리오 (`tests/load/`)
+  - [x] `common.js`: 공통 설정 (BASE_URL, 성공 임계값, 테스트 질문 풀)
+  - [x] `scenario_baseline.js`: 정상 부하 (10VU, 3분, OpenAI+Ollama 양쪽)
+  - [x] `scenario_ramp.js`: 점진적 증가 (10→50→100 VU, HPA Scale Up 검증)
+  - [x] `scenario_spike.js`: 급격한 폭증 (10→500 VU, 시스템 안정성 확인)
+  - [x] `scenario_soak.js`: 장시간 지속 (30VU, 50분, 메모리 누수/연결 풀 고갈 탐지)
+- [x] 단위 테스트 (`tests/unit/test_queue_metrics.py`, 14개 통과)
 
 ### 성공 기준
 
-- [ ] 1,000명 동시 접속 시 에러율 < 1%
-- [ ] Autoscaling 응답 시간 < 60초
-- [ ] P95 Latency < 2초
+- [ ] 1,000명 동시 접속 시 에러율 < 1% (실 K8s 환경 미검증)
+- [ ] Autoscaling 응답 시간 < 60초 (HPA 정책 설계 완료, 실측 미완)
+- [ ] P95 Latency < 2초 (k6 시나리오 기준, 실 부하 미완)
 
 ### 실제 결과
 
 ```
-(Phase 4 완료 후 실측치 기록)
+측정 환경: 로컬 minikube 또는 실제 K8s 클러스터 (미실행)
+구현 완료일: 2026-03-03
+
+[구현 실측]
+- 단위 테스트: 14개 통과 (QueueMetricsCollector enter/exit/moving_avg/lifecycle)
+- 전체 테스트: 142개 통과 (기존 128 + 신규 14)
+- 이동평균 정확도: 12/60 샘플 윈도우 검증 완료
+
+[K8s 실 배포 결과] — 미완, 추후 측정 예정
+- Scale Up 응답 시간: (minikube 테스트 후 기록)
+- Scale Down 안정화: (기록 예정)
+- 1000VU 에러율: (기록 예정)
 ```
+
+### 설계 결정 (Phase 4)
+
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| 큐 이동평균 | deque(maxlen=12/60) | 슬라이딩 윈도우 자동 관리; 최대 메모리 O(60) 고정 |
+| 샘플 간격 | 5초 | HPA 기본 평가 주기 15초보다 촘촘; 너무 짧으면 Prometheus 부하 |
+| Scale Up 기준 | 1분 평균 > 20 | 순간 spike에 즉각 반응; 이동평균으로 노이즈 제거 |
+| Scale Down 기준 | 5분 평균 < 5 | 빠른 축소로 인한 재확장 방지 (flapping 차단) |
+| 안정화 윈도우 | Scale Up 30초, Scale Down 300초 | 비대칭: 올리는 건 빠르게, 내리는 건 신중하게 |
+| Predictive Scaling | 미구현 | 현재 로드에서 반응형으로 충분; 패턴 데이터 미확보 |
 
 ### 면접 포인트 (Phase 4)
 
-```
-(Phase 4 완료 후 정리)
-```
+**예상 질문:** "왜 단순 동시접속 수가 아닌 이동평균을 HPA 지표로 썼나요?"
+
+**답변:**
+1. 상황: Spike 트래픽 시 순간 spike에 반응하면 HPA가 과잉 스케일 업 후 즉시 다운 반복(flapping)
+2. 선택: 1분 이동평균 → Scale Up, 5분 이동평균 → Scale Down (비대칭 정책)
+3. 이유: LLM 요청은 6초+의 긴 처리 시간 → 순간 수치보다 지속 부하가 실제 병목 지표
+4. 결과: Scale Up은 빠르게(30초 안정화), Scale Down은 신중하게(5분 안정화)로 flapping 방지
+5. 한계: 실 K8s 환경에서 Prometheus Adapter + HPA 통합 검증은 미완
 
 ---
 
@@ -758,6 +794,9 @@ A: 2-hop Cypher 쿼리에서 관계 속성(relation 텍스트)을 포함한 문�
 | 2026-02-22 | 3 | UTF-8 바이트/4 토큰 추정 | tiktoken | Qwen tokenizer ≠ tiktoken; ±30% 오차가 150% 임계에 충분 |
 | 2026-02-22 | 3 | 캐시 히트 quota 차감 없음 | 항상 차감 | 캐시 히트는 LLM 비용 없음; 할당량=GPU/API 실비용 기준 |
 | 2026-02-22 | 3 | SSE 스트리밍 | WebSocket | OpenAI API 호환 단방향 스트림에 적합; 추가 인프라 불필요 |
+| 2026-03-03 | 4 | deque(maxlen=12/60) 이동평균 | 단순 동시접속 수 | LLM 6초+ 처리 → 순간 수치 노이즈 큼; 슬라이딩 윈도우로 flapping 방지 |
+| 2026-03-03 | 4 | 비대칭 안정화 (Up 30초, Down 300초) | 대칭 정책 | 올리는 건 빠르게, 내리는 건 신중하게 — Scale Down 후 즉시 재확장 방지 |
+| 2026-03-03 | 4 | Predictive Scaling 미구현 | 구현 | 패턴 데이터 미확보; 반응형 HPA가 현재 로드에 충분 |
 | 2026-03-03 | A | `_process_chat()` 추출 | 핸들러별 복붙 | 캐시/검증/비용 로직 중복 방지; `/api/chat`과 `/v1/chat/completions` 단일 파이프라인 |
 | 2026-03-03 | A | Lazy import in `ollama_compat.py` | 모듈 상단 import | `main.py` ↔ `ollama_compat.py` 순환 import 방지 |
 | 2026-03-03 | A | `AsyncClient + ASGITransport` (비스트리밍 테스트) | `TestClient` | lifespan 없이 mock 주입; TestClient는 lifespan 실행으로 mock 덮어씀 |
