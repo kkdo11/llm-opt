@@ -1,0 +1,83 @@
+###############################################################################
+# HPA (Horizontal Pod Autoscaler)
+#
+# 스케일링 지표: llm_queue_depth_avg_1m / llm_queue_depth_avg_5m
+#   - 1분 이동평균: 최근 60초 LLM 요청 수 평균 (Scale Up 기준)
+#   - 5분 이동평균: 최근 300초 LLM 요청 수 평균 (Scale Down 기준)
+#
+# 정책:
+#   Scale Up  : 1분평균 > 20 → 30초 이내 포드 추가, 최대 10개
+#   Scale Down: 5분평균 < 5  → 5분 안정화 후 포드 제거, 최소 1개
+#
+# 사전 조건:
+#   1. Prometheus Adapter 설치 (kube-prometheus-stack 또는 standalone)
+#   2. Prometheus가 llm_queue_depth_avg_1m, llm_queue_depth_avg_5m 메트릭 수집 중
+#   3. Prometheus Adapter의 custom-metrics API에 해당 메트릭 노출
+#
+# Prometheus Adapter 설정 (prometheus-adapter-config.yaml에서 추가):
+#   rules:
+#     - seriesQuery: 'llm_queue_depth_avg_1m'
+#       resources:
+#         overrides:
+#           namespace: {resource: "namespace"}
+#       name:
+#         matches: "llm_queue_depth_avg_1m"
+#         as: "llm_queue_depth_avg_1m"
+#       metricsQuery: 'avg(llm_queue_depth_avg_1m{<<.LabelMatchers>>})'
+#
+###############################################################################
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: llm-opt-hpa
+  namespace: default
+  labels:
+    app: llm-opt
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: llm-opt-proxy
+
+  minReplicas: 1
+  maxReplicas: 10
+
+  metrics:
+    # Scale Up 기준: 1분 이동평균 > 20 → 포드 추가
+    - type: Pods
+      pods:
+        metric:
+          name: llm_queue_depth_avg_1m
+        target:
+          type: AverageValue
+          averageValue: "20"
+
+    # Scale Down 기준: 5분 이동평균 < 5 → 포드 제거
+    # averageValue 목표를 5로 설정하면 현재값 < 5일 때 스케일 다운
+    - type: Pods
+      pods:
+        metric:
+          name: llm_queue_depth_avg_5m
+        target:
+          type: AverageValue
+          averageValue: "5"
+
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30      # Scale Up: 30초 관측 후 결정
+      policies:
+        - type: Pods
+          value: 3                          # 한 번에 최대 3개 포드 추가
+          periodSeconds: 30
+        - type: Percent
+          value: 100                        # 또는 현재 포드 수의 100%
+          periodSeconds: 30
+      selectPolicy: Max                     # 더 많이 추가하는 정책 선택
+
+    scaleDown:
+      stabilizationWindowSeconds: 300     # Scale Down: 5분 안정화 확인 후 결정
+      policies:
+        - type: Pods
+          value: 1                          # 한 번에 최대 1개 포드 제거 (보수적)
+          periodSeconds: 60
+      selectPolicy: Min                     # 더 적게 제거하는 정책 선택

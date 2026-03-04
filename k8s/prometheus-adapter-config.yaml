@@ -1,0 +1,50 @@
+###############################################################################
+# Prometheus Adapter ConfigMap
+#
+# Prometheus에서 수집한 LLM 큐 메트릭을 K8s Custom Metrics API로 노출.
+# HPA가 이 메트릭을 조회하여 스케일링 판단에 사용한다.
+#
+# 설치:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm install prometheus-adapter prometheus-community/prometheus-adapter \
+#     -f k8s/prometheus-adapter-config.yaml
+#
+###############################################################################
+prometheus:
+  url: http://prometheus-operated.default.svc  # Prometheus 서비스 URL
+  port: 9090
+
+rules:
+  custom:
+    # 1분 이동평균 (HPA Scale Up 기준)
+    - seriesQuery: 'llm_queue_depth_avg_1m{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: { resource: "namespace" }
+          pod: { resource: "pod" }
+      name:
+        matches: "llm_queue_depth_avg_1m"
+        as: "llm_queue_depth_avg_1m"
+      metricsQuery: 'avg(llm_queue_depth_avg_1m{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+
+    # 5분 이동평균 (HPA Scale Down 기준)
+    - seriesQuery: 'llm_queue_depth_avg_5m{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: { resource: "namespace" }
+          pod: { resource: "pod" }
+      name:
+        matches: "llm_queue_depth_avg_5m"
+        as: "llm_queue_depth_avg_5m"
+      metricsQuery: 'avg(llm_queue_depth_avg_5m{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+
+    # 현재 큐 깊이 (모니터링용, 직접 스케일링 기준 아님)
+    - seriesQuery: 'llm_queue_depth{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: { resource: "namespace" }
+          pod: { resource: "pod" }
+      name:
+        matches: "llm_queue_depth"
+        as: "llm_queue_depth"
+      metricsQuery: 'sum(llm_queue_depth{<<.LabelMatchers>>}) by (<<.GroupBy>>)'

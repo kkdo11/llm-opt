@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-opt-proxy
+  namespace: default
+  labels:
+    app: llm-opt
+    version: "0.4.0"
+spec:
+  # 초기 1개 포드 — HPA가 자동으로 조정
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-opt
+  template:
+    metadata:
+      labels:
+        app: llm-opt
+      annotations:
+        # Prometheus 스크레이핑 설정
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: llm-opt-proxy
+          image: llm-opt:latest
+          imagePullPolicy: Never  # 로컬 이미지 (minikube eval $(minikube docker-env))
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          # ConfigMap에서 환경변수 주입
+          envFrom:
+            - configMapRef:
+                name: llm-opt-config
+          # 리소스 요청/제한 (SentenceTransformer 로딩 고려, ~512MB)
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          # 헬스체크: FastAPI /health 엔드포인트
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30  # SentenceTransformer 로딩 시간 확보
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 3
+      # SentenceTransformer 모델 파일 캐싱 (재시작 시 재다운로드 방지)
+      volumes:
+        - name: model-cache
+          emptyDir: {}

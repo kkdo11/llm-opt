@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-opt-config
+  namespace: default
+  labels:
+    app: llm-opt
+data:
+  # LLM 모드 (mock → 테스트 / ollama → 실제 Qwen 2.5 14B)
+  LLM_MODE: "mock"
+  LLM_BACKEND: "ollama"
+
+  # Ollama 서버 (NodePort 또는 host network 필요 — GPU 노드 고정)
+  OLLAMA_BASE_URL: "http://ollama-service:11434/v1"
+
+  # Redis
+  REDIS_URL: "redis://redis-service:6379"
+  CACHE_TTL: "86400"
+
+  # Semantic Cache
+  SEMANTIC_CACHE_ENABLED: "true"
+  EMBEDDING_MODEL: "paraphrase-multilingual-MiniLM-L12-v2"
+  SEMANTIC_THRESHOLD: "0.75"
+
+  # 비용 보호
+  USER_QUOTA_TOKENS: "100000"
+  COST_PER_INPUT_1K: "0.0005"
+  COST_PER_OUTPUT_1K: "0.0015"
+
+  # 로그 레벨
+  LOG_LEVEL: "info"

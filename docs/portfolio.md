@@ -158,7 +158,9 @@ FP Rate      |  0.0%  |  0.0%  | 유지  ✅
 | L1 Hit Rate | 50% (중복 50% 시나리오) |
 | L2 Hit Rate | **66.7%** (보완 후) |
 | False Positive | **0%** |
-| 단위 테스트 | 107개 (인프라 없이 실행) |
+| 단위 테스트 | 151개 (인프라 없이 실행) |
+| Grafana 대시보드 | 5패널 (비용/캐시/레이턴시/HPA 실시간 시각화) |
+| MindGraph 실 연동 | L1 히트 0.43ms 실측 (LLM 5,510ms 대비 12,814x) |
 
 ---
 
@@ -187,8 +189,9 @@ Semantic Cache에서 FP를 허용하면 사용자가 틀린 답변을 받는다.
 | L2 캐시 | Redis HNSW | 벡터 DB 없이 Redis 단일 인스턴스로 구현 가능 |
 | 임베딩 모델 | paraphrase-multilingual-MiniLM-L12-v2 | 한국어 포함 다국어 지원, 384차원 (속도/품질 균형) |
 | LLM | Qwen 2.5 14B (Ollama) | 로컬 서빙, 클라우드 API 비용 없음 |
-| 모니터링 | Prometheus | 캐시 히트율·레이턴시 실시간 추적 |
-| 테스트 | pytest + pytest-asyncio | 외부 의존성 전체 Mock, 107개 통과 |
+| 모니터링 | Prometheus + Grafana 11.4.0 | 비용·캐시·레이턴시·HPA 5패널 실시간 대시보드 |
+| 멀티 백엔드 | LLMBackend ABC (Ollama/OpenAI) | 환경변수 DI, MindGraph 실 연동 |
+| 테스트 | pytest + pytest-asyncio | 외부 의존성 전체 Mock, 151개 통과 |
 
 ---
 

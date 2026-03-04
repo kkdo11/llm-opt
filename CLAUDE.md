@@ -137,8 +137,12 @@ Ollama 네이티브 포맷(`/api/chat`)을 사용한다. 따라서 포맷 변환
 - docs/PHASE_TRACKER.md 참조
 - **Phase 1 완료**: Redis Hash Cache, Hit 50%, API 호출 50% 감소 (실측)
 - **Phase 2 완료**: Semantic Cache (HNSW) + Validation Layer, Hit 66.7%, FP 0% (실측)
-- **Phase 3 완료**: 토큰 예측 + 비용 계산 + 할당량 추적 + SSE 스트리밍 (2026-02-22, **커밋 미완료**)
-- **다음**: Phase A — MindGraph 연결 (멀티 백엔드 + Ollama 호환 엔드포인트)
+- **Phase 3 완료**: 토큰 예측 + 비용 계산 + 할당량 추적 + SSE 스트리밍
+- **Phase A 완료**: MindGraph 연결, L1 히트 0.43ms 실측 (2026-03-03)
+- **Phase B 완료**: Neo4j 하이브리드 RAG (mindgraph-ai 측, 2026-03-03)
+- **Phase 4 완료**: K8s HPA + k6 부하 시나리오 (구현 완료, 실 배포 미완)
+- **Phase 5 완료**: Grafana 대시보드 + 비용/토큰 메트릭 (2026-03-04) ← 최신
+- **브랜치**: phase-5/grafana | **테스트**: 151개 통과
 - **세션 컨텍스트**: .claude/SESSION_STATE.md 참조
 
 ## 전체 작업 순서
@@ -193,8 +197,8 @@ LLM_BACKEND=openai OPENAI_API_KEY=sk-... uvicorn src.proxy.main:app --reload --p
 # 개발 서버 (기존 방식, mock 모드)
 uvicorn src.proxy.main:app --reload --port 8000
 
-# 테스트 (107개, ~5초)
-pytest tests/ -v
+# 테스트 (142개)
+pytest tests/ -q
 pytest tests/unit/ -v --cov=src
 
 # Redis
@@ -202,7 +206,10 @@ docker compose up redis -d
 redis-cli ping
 
 # k6 부하 테스트
-k6 run tests/load/scenario_basic.js
+k6 run tests/load/scenario_baseline.js
+k6 run tests/load/scenario_ramp.js
+k6 run tests/load/scenario_spike.js
+k6 run tests/load/scenario_soak.js
 
 # Docker
 docker compose up --build
@@ -213,7 +220,7 @@ docker compose down
 - Phase 1: FastAPI Proxy + Redis Hash Cache + Prometheus ✅
 - Phase 2: SentenceTransformer + Redis Vector Search(HNSW) + Validation Layer ✅
 - Phase 3: 출력 토큰 예측 + Streaming 모니터링 + 사용자 할당량 ✅ (실측 미완)
-- Phase A: Ollama 호환 엔드포인트 + 멀티 백엔드 추상화 + MindGraph 연결
-- Phase B: MindGraph Neo4j 하이브리드 (mindgraph-ai 측)
-- Phase 4: Custom Metrics Exporter + HPA(이동평균) + k6 부하 테스트
-- Phase 5: Grafana 대시보드 + 실시간 비용 계산 (MindGraph 실 워크로드 기반)
+- Phase A: Ollama 호환 엔드포인트 + 멀티 백엔드 추상화 + MindGraph 연결 ✅
+- Phase B: MindGraph Neo4j 하이브리드 (mindgraph-ai 측) ✅
+- Phase 4: Custom Metrics Exporter + K8s HPA(이동평균) + k6 부하 테스트 ✅ (실 K8s 배포 미완)
+- Phase 5: Grafana 대시보드 + 실시간 비용 계산 ✅

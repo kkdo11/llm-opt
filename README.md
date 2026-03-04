@@ -6,7 +6,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)](https://fastapi.tiangolo.com)
 [![Redis Stack](https://img.shields.io/badge/Redis_Stack-7.4-red)](https://redis.io/docs/stack/)
-[![Tests](https://img.shields.io/badge/Tests-107_passed-brightgreen)](#테스트)
+[![Tests](https://img.shields.io/badge/Tests-151_passed-brightgreen)](#테스트)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
 ---
@@ -159,36 +159,61 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 llm-opt/
 ├── src/
 │   ├── proxy/
-│   │   ├── main.py                  # FastAPI 앱 + 캐시 파이프라인 (502줄)
+│   │   ├── main.py                  # FastAPI 앱 + 캐시 파이프라인
 │   │   ├── models.py                # ChatRequest / ChatResponse
 │   │   ├── cache/
 │   │   │   ├── redis_cache.py       # L1 Hash Cache (MD5 + Redis String)
 │   │   │   ├── vector_cache.py      # L2 Semantic Cache (HNSW, 384차원)
 │   │   │   └── normalizer.py        # 영어↔한글 기술 용어 정규화
 │   │   ├── validation/
-│   │   │   └── validator.py         # 3단계 FP 방지 (234줄)
+│   │   │   └── validator.py         # 3단계 FP 방지
 │   │   ├── cost/
 │   │   │   ├── token_predictor.py   # Rule-based 출력 토큰 예측
 │   │   │   └── cost_calculator.py   # 입출력 토큰 → USD
-│   │   └── rate_limit/
-│   │       └── quota_tracker.py     # 월간 할당량 (Redis EXPIREAT)
-│   └── metrics/
-│       └── prometheus.py            # 메트릭 정의 (3종)
-├── tests/unit/                      # 107개 단위 테스트
+│   │   ├── rate_limit/
+│   │   │   └── quota_tracker.py     # 월간 할당량 (Redis EXPIREAT)
+│   │   └── routes/
+│   │       └── ollama_compat.py     # Ollama 호환 엔드포인트 (MindGraph 연결)
+│   ├── backends/                    # 멀티 백엔드 추상화
+│   │   ├── base.py                  # LLMBackend ABC
+│   │   ├── ollama_backend.py        # Ollama (Qwen 2.5 14B, 기본)
+│   │   └── openai_backend.py        # OpenAI (선택적)
+│   ├── metrics/
+│   │   └── prometheus.py            # 메트릭 정의 (6종)
+│   └── scaling/
+│       └── queue_metrics.py         # 큐 깊이 이동평균 (Custom HPA)
+├── tests/unit/                      # 151개 단위 테스트
 │   ├── test_cache.py
 │   ├── test_vector_cache.py
 │   ├── test_validator.py
 │   ├── test_normalizer.py
 │   ├── test_token_predictor.py
 │   ├── test_quota_tracker.py
-│   └── test_proxy.py
+│   ├── test_proxy.py
+│   ├── test_ollama_compat.py
+│   ├── test_queue_metrics.py
+│   └── test_cost_metrics.py
+├── tests/load/                      # k6 부하 테스트 시나리오
+│   ├── scenario_baseline.js
+│   ├── scenario_ramp.js
+│   ├── scenario_spike.js
+│   └── scenario_soak.js
 ├── docs/
 │   ├── PROJECT_CONTEXT.md           # 아키텍처 및 기술 결정 기록
 │   └── PHASE_TRACKER.md             # Phase별 실측치 + 트러블슈팅
+├── k8s/                             # Kubernetes manifests
+│   ├── configmap.yaml
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   ├── hpa.yaml
+│   └── prometheus-adapter.yaml
 ├── scripts/                         # 벤치마크 및 실험 스크립트
 ├── monitoring/
-│   └── prometheus.yml
-├── docker-compose.yml               # Redis Stack + Prometheus
+│   ├── prometheus.yml
+│   ├── grafana-datasource.yml       # Grafana Prometheus 연결
+│   ├── grafana-dashboard-provisioning.yml
+│   └── grafana-dashboard.json       # 5패널 대시보드
+├── docker-compose.yml               # Redis Stack + Prometheus + Grafana
 └── .claude/                         # Claude Code 에이전트/스킬
 ```
 
@@ -213,7 +238,7 @@ llm-opt/
 ## 테스트
 
 ```bash
-# 전체 실행 (107개, ~5초)
+# 전체 실행 (151개, ~5초)
 pytest tests/ -v
 
 # 커버리지 포함
@@ -229,26 +254,36 @@ pytest tests/unit/test_validator.py -v
 
 ## 모니터링
 
-> Prometheus 메트릭 수집은 구현되어 있습니다.
-> Grafana 대시보드는 Phase 5에서 구현 예정입니다.
+Prometheus 메트릭 수집 + Grafana 대시보드 시각화가 구현되어 있습니다.
 
-**수집 메트릭 (구현 완료):**
+**수집 메트릭:**
 
 | 메트릭 | 타입 | 설명 |
 |--------|------|------|
 | `llm_api_calls_total` | Counter | LLM 실제 호출 횟수 (캐시 미스) |
 | `llm_cache_hits_total{tier}` | Counter | 캐시 히트 횟수 (l1_hash / l2_semantic) |
 | `llm_request_latency_seconds{cache_status}` | Histogram | 요청 처리 시간 |
+| `llm_total_cost_usd_total` | Counter | LLM 실제 호출로 발생한 누적 비용 (USD) |
+| `llm_cost_saved_usd_total{tier}` | Counter | 캐시 히트로 절감된 누적 비용 (USD) |
+| `llm_tokens_total{type}` | Counter | 누적 토큰 사용량 (input / output) |
 
 ```bash
-# Prometheus + Redis 기동
+# Prometheus + Redis + Grafana 기동
 docker compose up -d
 
 # 메트릭 엔드포인트 확인
 curl http://localhost:8000/metrics
+
+# Grafana 대시보드
+open http://localhost:3000  # admin / admin
 ```
 
-**예정 (Phase 5):** Grafana 대시보드 — Cache Hit Ratio, 실시간 비용 누적, 레이턴시 분포 시각화
+**Grafana 대시보드 5패널 (자동 프로비저닝):**
+- 실시간 비용 누적 (실제 vs 절감)
+- Cache Hit Ratio (5분 이동 평균)
+- 비용 절감 비율 (Pie Chart)
+- 레이턴시 분포 (P50 / P95 / P99)
+- 큐 깊이 & HPA 기준선
 
 ---
 
@@ -258,10 +293,10 @@ curl http://localhost:8000/metrics
 |-------|------|------|------------|
 | Phase 1 | FastAPI Proxy + Redis Hash Cache | ✅ 완료 | Hit 50%, 0.3ms, 20,217배 |
 | Phase 2 | Semantic Cache + Validation Layer | ✅ 완료 | Hit 66.7%, FP 0% |
-| Phase 3 | 토큰 예측 + 비용 보호 + 할당량 | ✅ 구현완료 | 실 Ollama 측정 예정 |
-| Phase A | MindGraph 연결 (Ollama 호환 엔드포인트) | 🔄 진행 예정 | — |
-| Phase 4 | Kubernetes + Custom HPA + k6 | ⬜ | — |
-| Phase 5 | Grafana 대시보드 + 실시간 비용 | ⬜ | — |
+| Phase 3 | 토큰 예측 + 비용 보호 + 할당량 | ✅ 완료 | 구현 완료, 실 Ollama 연동 |
+| Phase A | MindGraph 연결 (Ollama 호환 엔드포인트) | ✅ 완료 | L1 히트 0.43ms 실측, MindGraph 실 연동 |
+| Phase 4 | Kubernetes + Custom HPA + k6 | ✅ 구현완료 | manifests + k6 시나리오 (실 배포 미완) |
+| Phase 5 | Grafana 대시보드 + 실시간 비용 | ✅ 완료 | 5패널, 비용/토큰 Counter 3종, 151개 테스트 |
 
 ---
 

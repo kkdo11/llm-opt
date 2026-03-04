@@ -7,8 +7,8 @@
 
 ## 현재 위치
 
-**브랜치**: `main`
-**현재 상태**: Phase B (Neo4j 하이브리드) 완료. **다음 작업: Phase 4 (K8s+HPA)**
+**브랜치**: `phase-5/grafana`
+**현재 상태**: Phase 5 구현 완료 (Grafana 대시보드 + 비용/토큰 메트릭, 2026-03-04). **테스트 151개 통과**
 
 ---
 
@@ -64,6 +64,23 @@
 - `MindGraphService.java`: `searchNeo4jTwoHop()` — 2-hop Cypher
 - 실측: PostgreSQL+Neo4j 동기화 ✅, 2-hop RAG 확장 ✅, 50개 테스트 통과 ✅
 
+### Phase 4 ✅ 구현 완료 (브랜치: phase-4/k8s)
+- `src/metrics/queue_metrics.py`: QueueMetricsCollector (enter/exit, 이동평균, Prometheus Gauge)
+- `src/metrics/prometheus.py`: 주석 업데이트
+- `src/proxy/main.py`: queue_metrics 통합 (lifespan start/stop, LLM 호출 enter/exit, /health 스냅샷)
+- `k8s/configmap.yaml`, `deployment.yaml`, `service.yaml`, `hpa.yaml`, `prometheus-adapter-config.yaml`
+- `tests/load/`: common.js, scenario_baseline.js, scenario_ramp.js, scenario_spike.js, scenario_soak.js
+- `tests/unit/test_queue_metrics.py`: 14개 통과, 전체 142개 통과
+- 실 K8s 배포 및 부하 테스트 측정은 미완 (설계 및 코드 완료)
+
+### 테스트 실행
+
+```bash
+cd /home/kdw03/projects/llm-opt
+pytest tests/ -q          # 전체 151개, ~6초
+pytest tests/unit/ -v --cov=src --cov-report=term-missing
+```
+
 ## 커밋 필요한 파일 (llm-opt)
 
 ```bash
@@ -96,14 +113,21 @@ git commit -m "feat: Phase A — 멀티 백엔드 추상화 + Ollama 호환 엔�
 
 ---
 
-## 다음 작업: Phase 4 — K8s + Adaptive Scaling
+### Phase 5 ✅ 구현 완료 (브랜치: phase-5/grafana, 2026-03-04)
+- `src/metrics/prometheus.py`: Counter 3종 추가 (total_cost_usd, cost_saved_usd[tier], tokens_total[type])
+- `src/proxy/main.py`: L1 히트/L2 히트/LLM 호출 후(stream=False+True) 4곳 메트릭 기록
+- `docker-compose.yml`: Grafana 11.4.0 서비스 추가 (포트 3000)
+- `monitoring/grafana-datasource.yml`: Prometheus 연결 provisioning
+- `monitoring/grafana-dashboard-provisioning.yml`: 대시보드 자동 로드
+- `monitoring/grafana-dashboard.json`: 5개 패널 (비용 누적/Cache Hit Ratio/비용 절감/레이턴시/큐)
+- `tests/unit/test_cost_metrics.py`: 9개 신규 테스트 (registry 격리)
+- 전체 테스트: 151개 통과 (기존 142 + 신규 9)
 
-```
-- Custom Metrics Exporter: Queue 길이 이동평균 → Prometheus Gauge
-- HPA: Scale Up 1분평균 > 20, Scale Down 5분평균 < 5
-- k6 부하 테스트: 정상/증가/피크/Spike/Soak 시나리오
-- 브랜치: phase-4/k8s
-```
+## 다음 작업 (미정)
+
+- 실 K8s 배포 및 부하 테스트 측정 (Phase 4 미완)
+- Grafana 실 운영 환경 검증 (`docker compose up grafana`)
+- Phase 3/A 블로그 포스트 작성
 
 ---
 
