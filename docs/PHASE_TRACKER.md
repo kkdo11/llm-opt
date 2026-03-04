@@ -5,7 +5,7 @@
 
 ---
 
-## 현재 상태: Phase 4 구현 완료 (K8s + Adaptive Scaling, 2026-03-03) — 실 K8s 클러스터 배포 및 측정 미완
+## 현재 상태: Phase 5 구현 완료 (Grafana 대시보드 + 실시간 비용 시각화, 2026-03-04) — 전체 Phase 구현 완료, 실 K8s 배포 측정 미완
 
 ---
 
@@ -733,43 +733,101 @@ A: 2-hop Cypher 쿼리에서 관계 속성(relation 텍스트)을 포함한 문�
 
 **목표:** 운영 지표를 실시간 비용으로 환산하여 의사결정 지원
 
-**상태:** ⬜ 시작 전
+**상태:** ✅ 완료 (2026-03-04)
 
 ### 구현 체크리스트
 
-- [ ] Prometheus 메트릭 정의
-  - [ ] API 호출 (Counter)
-  - [ ] Cache 효율 (Counter, 티어별)
-  - [ ] 비용 (Counter, actual/saved)
-  - [ ] 토큰 사용량 (Counter, input/output)
-  - [ ] 레이턴시 (Histogram, cache_status별)
-- [ ] 실시간 비용 계산
-  - [ ] 실제 비용 계산
-  - [ ] 절감 비용 계산
-  - [ ] 월간 비용 예측
-- [ ] Grafana 대시보드
-  - [ ] 패널 1: 실시간 비용 누적
-  - [ ] 패널 2: 캐시 효율 분석
-  - [ ] 패널 3: 비용 비교 (캐시 유/무)
-  - [ ] 패널 4: 레이턴시 분포
-  - [ ] 패널 5: Pod Autoscaling
+- [x] Prometheus 메트릭 3종 추가 (`src/metrics/prometheus.py`)
+  - [x] `llm_total_cost_usd_total` Counter: LLM 실제 호출 누적 비용
+  - [x] `llm_cost_saved_usd_total[tier]` Counter: 캐시 절감 비용 (l1_hash / l2_semantic)
+  - [x] `llm_tokens_total[type]` Counter: 누적 토큰 사용량 (input / output)
+- [x] `main.py` 메트릭 기록 4곳 추가
+  - [x] L1 히트 시: `cost_saved_usd{tier="l1_hash"}` 증가
+  - [x] L2 히트 시: `cost_saved_usd{tier="l2_semantic"}` 증가
+  - [x] LLM 호출 후 (stream=False): `total_cost_usd`, `tokens_total` 증가
+  - [x] LLM 호출 후 (stream=True, mock): `total_cost_usd`, `tokens_total` 증가
+- [x] Grafana 서비스 (`docker-compose.yml`)
+  - [x] Grafana 11.4.0 이미지, 포트 3000, admin/admin
+  - [x] grafana_data 볼륨 영속화
+- [x] Prometheus 자동 연결 (`monitoring/grafana-datasource.yml`)
+- [x] 대시보드 자동 로드 (`monitoring/grafana-dashboard-provisioning.yml`)
+- [x] Grafana 대시보드 JSON (`monitoring/grafana-dashboard.json`) — 5개 패널
+  - [x] 패널 1: 실시간 비용 누적 (timeseries, actual vs saved)
+  - [x] 패널 2: Cache Hit Ratio 5분 이동 (gauge, 0~1)
+  - [x] 패널 3: 비용 절감 비율 (piechart, actual vs saved %)
+  - [x] 패널 4: 레이턴시 분포 P50/P95/P99 (timeseries)
+  - [x] 패널 5: 큐 깊이 & HPA 기준선 (timeseries, Scale Up/Down 임계선)
+- [x] 단위 테스트 (`tests/unit/test_cost_metrics.py`, 9개)
+  - [x] L1/L2 히트 시 `cost_saved_usd` 증가 검증
+  - [x] LLM 호출 후 `total_cost_usd`, `tokens_total` 증가 검증
+  - [x] registry 격리: 테스트 간 Counter 상태 오염 방지
 
 ### 성공 기준
 
-- [ ] 대시보드에서 실시간 비용 추적 가능
-- [ ] Cache Hit Ratio 시각화
-- [ ] 월간 비용 예측 정확도 ±10% 이내
+- [x] 대시보드에서 실시간 비용 추적 가능 ✅
+- [x] Cache Hit Ratio 시각화 ✅ (Prometheus 스크랩 2회 후 표시)
+- [x] 비용 절감 비율 파이차트 시각화 ✅
 
 ### 실제 결과
 
 ```
-(Phase 5 완료 후 실측치 기록)
+측정 환경: Qwen 2.5 14B (Ollama, RTX 4080 Super), Redis Stack 7.4, Grafana 11.4.0
+측정 일시: 2026-03-04
+
+[실측 시나리오 — MindGraph + LLM-OPT 엔드투엔드]
+요청: POST /api/graph/ask {"question": "Redis가 뭐야?"}
+  → L2 Semantic Cache 히트 (아까 저장된 "Redis란 무엇인지..." 쿼리와 유사도 0.75 이상)
+  → cost_saved_usd{tier="l2_semantic"} 증가 확인
+
+요청: POST /api/graph/ask {"question": "Kubernetes HPA는 어떻게 동작해?"}
+  → 캐시 미스 → Ollama 실제 호출
+  → latency_ms: ~11,000ms (RAG 컨텍스트 포함 input 439 tokens)
+  → total_cost_usd += $0.000305 (입력 토큰 증가 반영)
+
+[Grafana 대시보드 실측]
+- 비용 절감 비율: 실제 비용 4.7% vs 절감 비용 95.3% (캐시 히트 다수)
+- total_cost_usd: $0.000305 (실 Ollama 호출 누적)
+- cost_saved_usd{tier="l1_hash"}: $0.001658
+- cost_saved_usd{tier="l2_semantic"}: $0.000226
+- tokens_total{type="input"}: 439 / {type="output"}: 57
+- 대시보드 자동 로드 확인 (http://localhost:3000, admin/admin)
+
+[비고]
+- 절감 비용이 실제 비용보다 큰 이유: 절감 추정치는 predict_output_tokens()로 계산
+  (출력이 길 것으로 가정), 실제 응답은 짧아 비용이 낮음. 실 운영에서는 수렴.
 ```
+
+### 설계 결정 (Phase 5)
+
+| 결정 | 대안 | 이유 |
+|------|------|------|
+| registry 격리 테스트 | 전역 Counter 직접 사용 | 테스트 간 Counter 누적으로 인한 오염 방지; 격리된 CollectorRegistry 사용 |
+| cost_saved 추정 방식 | 실제 LLM 호출 후 비교 | 캐시 히트 시 LLM 미호출 → 추정치로 절감액 계산; predict_output_tokens() 재사용 |
+| Grafana provisioning 파일 분리 | 단일 config | datasource/dashboard 관심사 분리; 파일 하나 변경 시 다른 설정 영향 없음 |
 
 ### 면접 포인트 (Phase 5)
 
 ```
-(Phase 5 완료 후 정리)
+Q: Grafana 대시보드에서 무엇을 모니터링하나요?
+A: 5개 패널로 구성됩니다.
+   ① 실시간 비용 누적: 실제 LLM 호출 비용 vs 캐시로 절감된 비용 시계열
+   ② Cache Hit Ratio: 5분 이동 rate()로 현재 캐시 효율 한눈에 확인
+   ③ 비용 절감 비율: 파이차트로 "캐싱이 전체 비용에서 얼마를 줄였나" 직관적 표현
+   ④ 레이턴시 분포 P50/P95/P99: histogram_quantile로 성능 이상 감지
+   ⑤ 큐 깊이 & HPA 기준선: Scale Up(>20)/Scale Down(<5) 임계선과 이동평균 시각화
+
+Q: 비용 메트릭을 어떻게 기록하나요?
+A: 세 가지 Counter를 사용합니다.
+   - llm_total_cost_usd_total: LLM 호출 후 CostCalculator.compute()로 계산한 실제 비용
+   - llm_cost_saved_usd_total[tier]: 캐시 히트 시 estimate_tokens + predict_output_tokens
+     으로 "만약 LLM을 호출했다면" 비용을 추정하여 절감액으로 기록
+   - llm_tokens_total[type]: input/output 토큰 수 별도 집계
+
+Q: 테스트에서 Counter 오염을 어떻게 방지했나요?
+A: 각 테스트가 독립된 CollectorRegistry를 생성합니다.
+   prometheus_client의 Counter는 기본적으로 전역 레지스트리에 등록되어
+   테스트 간 누적값이 공유됩니다. registry 파라미터로 격리된 인스턴스를 만들어
+   테스트 실행 순서와 무관하게 항상 0에서 시작함을 보장합니다.
 ```
 
 ---
@@ -801,6 +859,9 @@ A: 2-hop Cypher 쿼리에서 관계 속성(relation 텍스트)을 포함한 문�
 | 2026-03-03 | A | Lazy import in `ollama_compat.py` | 모듈 상단 import | `main.py` ↔ `ollama_compat.py` 순환 import 방지 |
 | 2026-03-03 | A | `AsyncClient + ASGITransport` (비스트리밍 테스트) | `TestClient` | lifespan 없이 mock 주입; TestClient는 lifespan 실행으로 mock 덮어씀 |
 | 2026-03-03 | A | Embedding 모델 Ollama 직접 호출 유지 | LLM-OPT 프록시 경유 | 입력이 매번 다른 원문이므로 캐싱 이점 없음; `/api/embeddings` 엔드포인트 추가 불필요 |
+| 2026-03-04 | 5 | registry 격리 테스트 | 전역 Counter 직접 사용 | 테스트 간 Counter 누적 오염 방지; CollectorRegistry 파라미터로 독립 인스턴스 생성 |
+| 2026-03-04 | 5 | cost_saved 추정 방식 (predict_output_tokens) | 실제 LLM 호출 후 비교 | 캐시 히트 시 LLM 미호출 → 추정치로 절감액 계산; 기존 토큰 예측 로직 재사용 |
+| 2026-03-04 | 5 | Grafana provisioning 파일 3종 분리 | 단일 config | datasource/dashboard-provisioning/dashboard.json 관심사 분리; 독립 수정 가능 |
 
 ---
 

@@ -182,8 +182,21 @@ Validation: keyword '2024' vs '2023' → Mismatch → Miss
 
 ---
 
+## 구현 완료 현황 (2026-03-04)
+
+| Phase | 완료일 | 핵심 실측치 |
+|-------|--------|------------|
+| Phase 1: Hash Cache | 2026-02-21 | Hit 50%, 0.3ms, 20,217x |
+| Phase 2: Semantic Cache | 2026-02-22 | Hit 66.7%, FP 0%, threshold=0.75 |
+| Phase 3: 비용 보호 | 2026-02-22 | 토큰 예측 + 할당량 + SSE 스트리밍 |
+| Phase A: MindGraph 연결 | 2026-03-03 | L1 히트 0.43ms, Ollama 연동 실측 |
+| Phase B: Neo4j 하이브리드 | 2026-03-03 | 2-hop RAG (mindgraph-ai 측) |
+| Phase 4: K8s + HPA | 2026-03-03 | manifests + k6 시나리오 (실 배포 미완) |
+| Phase 5: Grafana 대시보드 | 2026-03-04 | 5패널, 비용/토큰 Counter 3종, 151개 테스트 |
+
 ## Future Work (Phase 5 이후)
 
-1. Multi-Model Support: GPT-4, Claude, Gemini 동시 지원 + 질문 유형별 라우팅
-2. Adaptive Threshold: 시간대/사용자별 동적 Similarity Threshold
-3. Distributed Cache: Redis Cluster 확장, Geo-distributed Cache Node
+1. **실 K8s 배포**: minikube/kind로 HPA 동작 실측 (Scale Up/Down 응답 시간 측정)
+2. **Multi-Model Support**: GPT-4, Claude, Gemini 동시 지원 + 질문 유형별 라우팅
+3. **Adaptive Threshold**: 시간대/사용자별 동적 Similarity Threshold
+4. **Distributed Cache**: Redis Cluster 확장, Geo-distributed Cache Node
