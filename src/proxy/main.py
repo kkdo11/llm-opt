@@ -51,7 +51,14 @@ from sentence_transformers import SentenceTransformer
 from src.backends.base import LLMBackend
 from src.backends.ollama_backend import OllamaBackend
 from src.backends.openai_backend import OpenAIBackend
-from src.metrics.prometheus import api_calls_total, cache_hits_total, latency_seconds
+from src.metrics.prometheus import (
+    api_calls_total,
+    cache_hits_total,
+    cost_saved_usd,
+    latency_seconds,
+    tokens_total,
+    total_cost_usd,
+)
 from src.metrics.queue_metrics import queue_metrics
 from src.proxy.cache.normalizer import normalize_query
 from src.proxy.cache.redis_cache import RedisCache, cache_key
@@ -233,6 +240,11 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
         elapsed = (time.perf_counter() - start_time) * 1000
         cache_hits_total.labels(tier="l1_hash").inc()
         latency_seconds.labels(cache_status="hit").observe(elapsed / 1000)
+        _input_est = estimate_tokens(query_text)
+        _output_est = predict_output_tokens(query_text)
+        cost_saved_usd.labels(tier="l1_hash").inc(
+            _cost_calculator.compute(_input_est, _output_est)
+        )
         _log_jsonl({
             "request_id": request_id, "event": "cache_hit",
             "tier": "l1_hash", "latency_ms": round(elapsed, 2), "model": request.model,
@@ -273,6 +285,11 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
                     elapsed = (time.perf_counter() - start_time) * 1000
                     cache_hits_total.labels(tier="l2_semantic").inc()
                     latency_seconds.labels(cache_status="hit").observe(elapsed / 1000)
+                    _input_est = estimate_tokens(query_text)
+                    _output_est = predict_output_tokens(query_text)
+                    cost_saved_usd.labels(tier="l2_semantic").inc(
+                        _cost_calculator.compute(_input_est, _output_est)
+                    )
                     _log_jsonl({
                         "request_id": request_id, "event": "cache_hit",
                         "tier": "l2_semantic", "similarity": round(similarity, 4),
@@ -346,6 +363,9 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
             elapsed = (time.perf_counter() - start_time) * 1000
             api_calls_total.inc()
             latency_seconds.labels(cache_status="miss").observe(elapsed / 1000)
+            total_cost_usd.inc(cost)
+            tokens_total.labels(type="input").inc(input_tokens)
+            tokens_total.labels(type="output").inc(output_tokens)
             _log_jsonl({
                 "request_id": request_id, "event": "llm_call_stream",
                 "llm_mode": llm_mode, "latency_ms": round(elapsed, 2),
@@ -405,6 +425,9 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
     elapsed = (time.perf_counter() - start_time) * 1000
     api_calls_total.inc()
     latency_seconds.labels(cache_status="miss").observe(elapsed / 1000)
+    total_cost_usd.inc(cost)
+    tokens_total.labels(type="input").inc(input_tokens)
+    tokens_total.labels(type="output").inc(output_tokens)
     _log_jsonl({
         "request_id": request_id, "event": "llm_call",
         "llm_mode": llm_mode, "latency_ms": round(elapsed, 2),

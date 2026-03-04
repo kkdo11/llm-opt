@@ -7,8 +7,8 @@
 
 ## 현재 위치
 
-**브랜치**: `phase-4/k8s`
-**현재 상태**: Phase 4 구현 완료 (K8s manifests + HPA + k6 + Custom Metrics). **다음 작업: Phase 5 (Grafana 대시보드)**
+**브랜치**: `phase-5/grafana`
+**현재 상태**: Phase 5 구현 완료 (Grafana 대시보드 + 비용/토큰 메트릭, 2026-03-04). **테스트 151개 통과**
 
 ---
 
@@ -73,6 +73,14 @@
 - `tests/unit/test_queue_metrics.py`: 14개 통과, 전체 142개 통과
 - 실 K8s 배포 및 부하 테스트 측정은 미완 (설계 및 코드 완료)
 
+### 테스트 실행
+
+```bash
+cd /home/kdw03/projects/llm-opt
+pytest tests/ -q          # 전체 151개, ~6초
+pytest tests/unit/ -v --cov=src --cov-report=term-missing
+```
+
 ## 커밋 필요한 파일 (llm-opt)
 
 ```bash
@@ -105,18 +113,21 @@ git commit -m "feat: Phase A — 멀티 백엔드 추상화 + Ollama 호환 엔�
 
 ---
 
-## 다음 작업: Phase 5 — Grafana 대시보드 + 실시간 비용 시각화
+### Phase 5 ✅ 구현 완료 (브랜치: phase-5/grafana, 2026-03-04)
+- `src/metrics/prometheus.py`: Counter 3종 추가 (total_cost_usd, cost_saved_usd[tier], tokens_total[type])
+- `src/proxy/main.py`: L1 히트/L2 히트/LLM 호출 후(stream=False+True) 4곳 메트릭 기록
+- `docker-compose.yml`: Grafana 11.4.0 서비스 추가 (포트 3000)
+- `monitoring/grafana-datasource.yml`: Prometheus 연결 provisioning
+- `monitoring/grafana-dashboard-provisioning.yml`: 대시보드 자동 로드
+- `monitoring/grafana-dashboard.json`: 5개 패널 (비용 누적/Cache Hit Ratio/비용 절감/레이턴시/큐)
+- `tests/unit/test_cost_metrics.py`: 9개 신규 테스트 (registry 격리)
+- 전체 테스트: 151개 통과 (기존 142 + 신규 9)
 
-```
-- Prometheus 메트릭 정의 보강 (비용 Counter, 토큰 Counter)
-- Grafana 대시보드 JSON (5개 패널)
-  - 패널 1: 실시간 비용 누적 (actual vs saved)
-  - 패널 2: Cache Hit Ratio (L1/L2 tier별)
-  - 패널 3: 비용 비교 (캐시 유/무)
-  - 패널 4: 레이턴시 분포 (P50/P95/P99)
-  - 패널 5: Pod Autoscaling (HPA replicas + queue depth)
-- 브랜치: phase-5/grafana
-```
+## 다음 작업 (미정)
+
+- 실 K8s 배포 및 부하 테스트 측정 (Phase 4 미완)
+- Grafana 실 운영 환경 검증 (`docker compose up grafana`)
+- Phase 3/A 블로그 포스트 작성
 
 ---
 
