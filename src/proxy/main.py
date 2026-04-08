@@ -18,9 +18,11 @@
 
 환경변수:
   LLM_MODE:    'mock' | 'ollama' (기본: mock)
-  LLM_BACKEND: 'ollama' | 'openai' (기본: ollama, LLM_MODE=ollama 시 사용)
+  LLM_BACKEND: 'ollama' | 'openai' | 'solar' (기본: ollama, LLM_MODE=ollama 시 사용)
   OLLAMA_BASE_URL:   Ollama 서버 URL (기본: http://localhost:11434/v1)
   OPENAI_API_KEY:    OpenAI API 키 (LLM_BACKEND=openai 시 필수)
+  SOLAR_API_KEY:     Upstage Solar API 키 (LLM_BACKEND=solar 시 필수)
+  SOLAR_MODEL:       Solar 모델명 (기본: solar-pro)
   REDIS_URL:         Redis 연결 URL (기본: redis://localhost:6379)
   CACHE_TTL:         캐시 TTL 초 (기본: 86400)
   SEMANTIC_CACHE_ENABLED: L2 활성화 여부 (기본: true)
@@ -129,8 +131,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if llm_mode != "mock":
         backend_type = os.getenv("LLM_BACKEND", "ollama").lower()
         if backend_type == "openai":
-            _llm_backend = OpenAIBackend(api_key=os.getenv("OPENAI_API_KEY", ""))
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if not api_key:
+                raise ValueError("LLM_BACKEND=openai이지만 OPENAI_API_KEY가 설정되지 않았습니다.")
+            _llm_backend = OpenAIBackend(api_key=api_key)
             logger.info("LLM 백엔드: OpenAI")
+        elif backend_type == "solar":
+            api_key = os.getenv("SOLAR_API_KEY", "").strip()
+            if not api_key:
+                raise ValueError("LLM_BACKEND=solar이지만 SOLAR_API_KEY가 설정되지 않았습니다.")
+            _llm_backend = OpenAIBackend(
+                api_key=api_key,
+                base_url="https://api.upstage.ai/v1",
+                default_model=os.getenv("SOLAR_MODEL", "solar-pro"),
+            )
+            logger.info("LLM 백엔드: Upstage Solar (%s)", os.getenv("SOLAR_MODEL", "solar-pro"))
         else:
             base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
             api_key = os.getenv("OLLAMA_API_KEY", "ollama")
@@ -263,9 +278,13 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
         )
 
     # ── L2 Semantic Cache 조회 ─────────────────────────────────────────────
+    # RAG 프롬프트는 컨텍스트가 포함되어 길이가 길다 (보통 300자 이상).
+    # 구조가 같아도 DB 내용이 달라지면 다른 응답이 나와야 하므로 L2 스킵.
+    # L1 해시 캐시는 유지 — 완전히 동일한 프롬프트라면 같은 결과가 맞다.
+    _l2_skip = len(query_text) > 300
     embedding: np.ndarray | None = None
 
-    if _vector_cache is not None and _embedding_model is not None:
+    if _vector_cache is not None and _embedding_model is not None and not _l2_skip:
         normalized_query = normalize_query(query_text)
         embedding = await _get_embedding(normalized_query)
         candidates = await _vector_cache.search(embedding)
@@ -352,7 +371,7 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
                 await _quota_tracker.increment(request.user_id, total_tokens)
 
             await _cache.set(l1_key, mock_content)
-            if _vector_cache is not None and embedding is not None:
+            if _vector_cache is not None and embedding is not None and not _l2_skip:
                 query_lang = await _detect_lang(normalize_query(query_text))
                 keywords = extract_keywords(query_text)
                 await _vector_cache.store(
@@ -411,7 +430,7 @@ async def _process_chat(request: ChatRequest) -> "ChatResponse | StreamingRespon
 
     await _cache.set(l1_key, content)
 
-    if _vector_cache is not None and embedding is not None:
+    if _vector_cache is not None and embedding is not None and not _l2_skip:
         query_lang = await _detect_lang(normalize_query(query_text))
         keywords = extract_keywords(query_text)
         await _vector_cache.store(

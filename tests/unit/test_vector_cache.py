@@ -36,9 +36,11 @@ def mock_redis() -> AsyncMock:
     client.json = MagicMock(return_value=json_mock)
 
     # Pipeline Mock
-    pipe_mock = AsyncMock()
+    # pipe.json().set()과 pipe.expire()는 pipeline 안에서 동기 호출 (큐에 쌓기만 함)
+    # execute()만 비동기 — AsyncMock으로 처리
+    pipe_mock = MagicMock()
     pipe_mock.json = MagicMock(return_value=json_mock)
-    pipe_mock.expire = AsyncMock()
+    pipe_mock.expire = MagicMock()
     pipe_mock.execute = AsyncMock(return_value=[True, True])
     client.pipeline = MagicMock(return_value=pipe_mock)
 

@@ -20,3 +20,11 @@ mlflow.db
 # IDE
 .idea/
 .vscode/
+
+# Claude Code 내부 설정
+.claude/hooks/
+.claude/plans/
+.claude/settings.local.json
+
+# 미완성 실험 스크립트
+scripts/solar_*.py

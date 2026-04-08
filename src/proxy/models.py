@@ -1,6 +1,6 @@
 """Pydantic 요청/응답 모델 정의."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class ChatMessage(BaseModel):
@@ -8,6 +8,11 @@ class ChatMessage(BaseModel):
 
     role: str
     content: str
+
+    @field_validator("role")
+    @classmethod
+    def normalize_role(cls, v: str) -> str:
+        return v.lower()
 
 
 class ChatRequest(BaseModel):

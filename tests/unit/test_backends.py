@@ -201,8 +201,6 @@ class TestOpenAIBackendChat:
     @pytest.mark.asyncio
     async def test_chat_returns_llm_response(self) -> None:
         """정상 응답 시 LLMResponse를 반환해야 한다."""
-        backend = OpenAIBackend(api_key="sk-test")
-
         mock_response = MagicMock()
         mock_response.choices[0].message.content = "Hello!"
         mock_response.usage.prompt_tokens = 8
@@ -212,6 +210,7 @@ class TestOpenAIBackendChat:
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         with patch("src.backends.openai_backend.AsyncOpenAI", return_value=mock_client):
+            backend = OpenAIBackend(api_key="sk-test")
             result = await backend.chat(
                 messages=[{"role": "user", "content": "Hi"}],
                 model="gpt-4o-mini",
@@ -224,14 +223,13 @@ class TestOpenAIBackendChat:
     @pytest.mark.asyncio
     async def test_chat_raises_on_api_error(self) -> None:
         """API 오류 시 예외를 전파해야 한다."""
-        backend = OpenAIBackend(api_key="sk-invalid")
-
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
             side_effect=Exception("Invalid API key")
         )
 
         with patch("src.backends.openai_backend.AsyncOpenAI", return_value=mock_client):
+            backend = OpenAIBackend(api_key="sk-invalid")
             with pytest.raises(Exception, match="Invalid API key"):
                 await backend.chat(
                     messages=[{"role": "user", "content": "Hi"}],
@@ -241,12 +239,11 @@ class TestOpenAIBackendChat:
     @pytest.mark.asyncio
     async def test_health_check_returns_true_when_connected(self) -> None:
         """OpenAI API 정상 연결 시 True를 반환해야 한다."""
-        backend = OpenAIBackend(api_key="sk-test")
-
         mock_client = AsyncMock()
         mock_client.models.list = AsyncMock(return_value=MagicMock())
 
         with patch("src.backends.openai_backend.AsyncOpenAI", return_value=mock_client):
+            backend = OpenAIBackend(api_key="sk-test")
             result = await backend.health_check()
 
         assert result is True

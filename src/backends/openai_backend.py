@@ -1,10 +1,13 @@
-"""OpenAI API 백엔드 구현 (Phase A-1).
+"""OpenAI 호환 API 백엔드 구현 (Phase A-1).
 
 Ollama가 기본 백엔드이며, 이 백엔드는 선택적 옵션이다.
 환경변수: LLM_BACKEND=openai, OPENAI_API_KEY=sk-...
 
+OpenAI 호환 API라면 base_url 지정으로 다른 서비스도 사용 가능.
+예: Upstage Solar → base_url="https://api.upstage.ai/v1"
+
 Ollama 백엔드와 다른 점:
-  - OpenAI 공식 엔드포인트 사용 (base_url 없음)
+  - base_url 미지정 시 OpenAI 공식 엔드포인트 사용
   - 스트리밍 미구현 (현재 운영 환경은 Ollama 중심)
     TODO: 필요 시 chat_stream 구현
 """
@@ -22,14 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAIBackend(LLMBackend):
-    """OpenAI API 백엔드.
+    """OpenAI API 호환 백엔드.
+
+    OpenAI 공식 API 또는 OpenAI 호환 서비스(예: Upstage Solar)를 지원한다.
 
     Attributes:
-        api_key: OpenAI API 키 (필수)
+        api_key: API 키 (필수)
+        base_url: API 엔드포인트 URL (선택, None이면 OpenAI 공식 사용)
+        default_model: 기본 모델명 (선택, None이면 요청 시 전달된 model 사용)
     """
 
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
+    def __init__(self, api_key: str, base_url: str | None = None, default_model: str | None = None) -> None:
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self.default_model = default_model  # None이면 request.model 그대로 사용
 
     async def chat(self, messages: list[dict], model: str) -> LLMResponse:
         """OpenAI API에 단일 응답을 요청한다.
@@ -44,11 +52,11 @@ class OpenAIBackend(LLMBackend):
         Raises:
             Exception: API 호출 실패 시
         """
-        client = AsyncOpenAI(api_key=self.api_key)
+        resolved_model = self.default_model or model
 
         try:
-            response = await client.chat.completions.create(
-                model=model,
+            response = await self._client.chat.completions.create(
+                model=resolved_model,
                 messages=messages,  # type: ignore[arg-type]
                 stream=False,
             )
@@ -84,14 +92,13 @@ class OpenAIBackend(LLMBackend):
         yield f"data: {json.dumps({'content': '', 'done': True, 'truncated': False}, ensure_ascii=False)}\n\n"
 
     async def health_check(self) -> bool:
-        """OpenAI API 연결 상태를 확인한다.
+        """OpenAI 호환 API 연결 상태를 확인한다.
 
         Returns:
             True이면 정상, False이면 연결 불가 (API 키 무효 포함)
         """
-        client = AsyncOpenAI(api_key=self.api_key)
         try:
-            await client.models.list()
+            await self._client.models.list()
             return True
         except Exception:
             return False

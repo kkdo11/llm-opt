@@ -13,7 +13,7 @@ Redis key: llm:quota:{user_id}:{YYYYMM} → 누적 토큰 수
 
 import calendar
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from redis.asyncio import Redis
@@ -41,7 +41,7 @@ def _quota_key(user_id: str, dt: datetime | None = None) -> str:
         Redis 키 문자열 (예: llm:quota:user1:202602)
     """
     if dt is None:
-        dt = datetime.utcnow()
+        dt = datetime.now(timezone.utc)
     return f"llm:quota:{user_id}:{dt.strftime('%Y%m')}"
 
 
@@ -55,7 +55,7 @@ def _month_end_timestamp(dt: datetime | None = None) -> int:
         Unix timestamp (정수)
     """
     if dt is None:
-        dt = datetime.utcnow()
+        dt = datetime.now(timezone.utc)
     last_day = calendar.monthrange(dt.year, dt.month)[1]
     end_of_month = datetime(dt.year, dt.month, last_day, 23, 59, 59)
     return int(end_of_month.timestamp())

@@ -11,7 +11,8 @@
 > "개인 지식 그래프 시스템(MindGraph)을 운영하면서 LLM 반복 호출의 비효율을 직접 겪었고,
 > 이를 해결하기 위해 Semantic Caching + 트래픽 제어 기반의 LLM 프록시(LLM-OPT)를 설계·구현했습니다.
 > 동일 질문은 6,065ms → 0.3ms, 의미 유사 질문은 6,065ms → 25ms로 단축했고,
-> 107개 단위 테스트로 검증했습니다."
+> 실제 MindGraph와 연동 후 Grafana 대시보드에서 비용 절감 95.3%를 실측했습니다.
+> 151개 단위 테스트로 검증했습니다."
 
 ---
 
@@ -66,7 +67,9 @@
 | L1 히트율 | **50%** | 중복 50% 시나리오 |
 | L2 히트율 | **66.7%** | 보완 후, threshold=0.75 |
 | False Positive | **0% (실질)** | Validation Layer 적용 후 |
-| 단위 테스트 | **107개** 통과 | Phase 1~3 |
+| MindGraph L1 Hit (실 연동) | **0.43ms** | 2026-03-03 실측 |
+| Grafana 비용 절감 비율 | **95.3%** | 실 Ollama 검증 2026-03-04 |
+| 단위 테스트 | **151개** 통과 | Phase 5 기준 |
 
 ---
 
@@ -362,7 +365,7 @@ await redis.expireat(key, int(expiry))
 
 ---
 
-**Q. 107개 테스트를 어떻게 구성했나요?**
+**Q. 151개 테스트를 어떻게 구성했나요?**
 
 **A.**
 외부 의존성(Redis, LLM)을 모두 mock으로 처리하여 단위 테스트를 독립적으로 만들었습니다.
@@ -374,8 +377,12 @@ await redis.expireat(key, int(expiry))
 - `test_token_predictor.py`: 토큰 예측 20개 (유형별 패턴)
 - `test_quota_tracker.py`: 할당량 추적 14개 (INCRBY, 80% 경고, 월말 만료)
 - `test_proxy.py`: 통합 흐름 20개 (L1 히트, L2 히트, LLM 호출, 429 응답)
+- `test_backends.py`: OllamaBackend/OpenAIBackend 21개 (chat, stream, health_check)
+- `test_ollama_compat.py`: Ollama 호환 엔드포인트 11개 (/api/chat, /api/generate)
+- `test_queue_metrics.py`: HPA 이동평균 메트릭 14개 (enter/exit, 1분/5분 윈도우)
+- `test_cost_metrics.py`: Prometheus Counter 9개 (registry 격리, L1/L2/LLM 비용)
 
-`SEMANTIC_CACHE_ENABLED=false` 환경변수로 SentenceTransformer 로딩을 막아 테스트 실행 시간을 ~5초로 유지했습니다.
+`SEMANTIC_CACHE_ENABLED=false` 환경변수로 SentenceTransformer 로딩을 막아 테스트 실행 시간을 ~6초로 유지했습니다.
 
 ---
 
@@ -394,6 +401,91 @@ with TestClient(app) as client:
 ```
 
 추가로 Phase 3에서 `_quota_tracker`를 전역 변수로 추가한 후, 이전 테스트의 lifespan에서 만든 Redis 클라이언트가 다음 테스트의 event loop에서 참조되는 문제가 생겼습니다. fixture에서 명시적으로 `None`으로 초기화해 해결했습니다.
+
+---
+
+### [카테고리 6-1] MindGraph 연결 (Phase A)
+
+---
+
+**Q. MindGraph와 LLM-OPT를 어떻게 연결했나요?**
+
+**A.**
+LangChain4j의 OllamaChatModel은 OpenAI 포맷(`/v1/chat/completions`)이 아닌 Ollama 네이티브 포맷(`/api/chat`)을 씁니다. 따라서 LLM-OPT에 Ollama 호환 엔드포인트(`ollama_compat.py`)를 추가했습니다.
+
+핵심은 기존 L1→L2→LLM 파이프라인을 `_process_chat()`으로 추출하여 `/v1/chat/completions`와 `/api/chat` 양쪽에서 재사용한 것입니다. 캐시/검증/비용 로직은 전혀 변경하지 않았습니다.
+
+MindGraph 입장에서는 `application.properties`의 base-url 한 줄만 `:11434` → `:8000`으로 바꾸면 됩니다.
+
+**실측:** 동일 텍스트 재추출 시 5,510ms → 0.43ms, Redis에 `llm:cache:*` 5개, `llm:vec:*` 5개 저장 확인 (2026-03-03).
+
+---
+
+**Q. 백엔드 추상화를 왜 했나요?**
+
+**A.**
+로컬 Qwen(Ollama)으로 개발하되 필요 시 OpenAI로 전환할 수 있게 하고 싶었습니다. `LLMBackend` ABC를 정의하고 환경변수 `LLM_BACKEND=openai`로 DI 전환됩니다. 캐시/검증/비용 레이어는 백엔드와 완전히 분리되어 있어서 백엔드를 바꿔도 파이프라인은 그대로입니다.
+
+---
+
+**Q. SSE와 NDJSON의 차이는? 왜 변환이 필요했나요?**
+
+**A.**
+기존 스트리밍은 OpenAI 호환 SSE 포맷(`data: {...}\n\n`)이고, Ollama 네이티브 스트리밍은 NDJSON(`{...}\n`)입니다. `_sse_to_ndjson()` 변환 제너레이터를 만들어 기존 파이프라인은 변경하지 않고 포맷만 변환해 응답합니다.
+
+---
+
+### [카테고리 6-2] K8s + Adaptive Scaling (Phase 4)
+
+---
+
+**Q. 왜 단순 동시접속 수가 아닌 이동평균을 HPA 지표로 썼나요?**
+
+**A.**
+LLM 요청은 평균 6초 이상의 처리 시간을 가집니다. 순간 spike에 반응하면 HPA가 과잉 스케일 업 후 즉시 다운을 반복하는 flapping이 발생합니다.
+
+1분 이동평균(Scale Up 기준)과 5분 이동평균(Scale Down 기준)을 비대칭으로 사용합니다. 올리는 건 빠르게(30초 안정화), 내리는 건 신중하게(5분 안정화)로 flapping을 방지합니다.
+
+구현은 `deque(maxlen=12)`, `deque(maxlen=60)`으로 5초 간격 샘플을 슬라이딩 윈도우로 유지합니다.
+
+**한계:** 실 K8s 환경에서 Prometheus Adapter + HPA 통합 검증은 아직 미완입니다.
+
+---
+
+### [카테고리 6-3] Grafana 대시보드 (Phase 5)
+
+---
+
+**Q. Grafana 대시보드에서 무엇을 모니터링하나요?**
+
+**A.**
+5개 패널로 구성됩니다.
+- ① 실시간 비용 누적: 실제 LLM 호출 비용 vs 캐시로 절감된 비용 시계열
+- ② Cache Hit Ratio: 5분 이동 `rate()`로 현재 캐시 효율을 한눈에 확인
+- ③ 비용 절감 비율: 파이차트로 "캐싱이 전체 비용에서 얼마를 줄였나" 직관적 표현
+- ④ 레이턴시 분포 P50/P95/P99: `histogram_quantile`로 성능 이상 감지
+- ⑤ 큐 깊이 & HPA 기준선: Scale Up(>20)/Scale Down(<5) 임계선과 이동평균 시각화
+
+**실측 (2026-03-04):** 비용 절감 비율 95.3%, total_cost_usd $0.000305, 절감 비용 $0.001884.
+
+---
+
+**Q. 비용 메트릭을 어떻게 설계했나요?**
+
+**A.**
+세 가지 Prometheus Counter를 사용합니다.
+- `llm_total_cost_usd_total`: LLM 호출 후 CostCalculator.compute()로 계산한 실제 비용
+- `llm_cost_saved_usd_total[tier]`: 캐시 히트 시 "만약 LLM을 호출했다면"의 비용을 predict_output_tokens()로 추정해 절감액으로 기록
+- `llm_tokens_total[type]`: input/output 토큰 수 별도 집계
+
+절감 비용이 실제 비용보다 크게 나오는 이유: 절감 추정치는 토큰 예측 상한으로 계산하지만, 실제 응답은 더 짧은 경우가 많기 때문입니다. 실 운영에서는 수렴합니다.
+
+---
+
+**Q. 테스트에서 Prometheus Counter 오염을 어떻게 방지했나요?**
+
+**A.**
+prometheus_client의 Counter는 기본적으로 전역 레지스트리에 등록됩니다. 테스트 간 누적값이 공유되어 순서에 따라 결과가 달라지는 문제가 있었습니다. 격리된 `CollectorRegistry` 인스턴스를 각 테스트에서 생성하여 항상 0에서 시작함을 보장했습니다.
 
 ---
 
@@ -450,11 +542,11 @@ Threshold 실험에서 예상과 다른 결과가 나왔을 때 원인을 분석
 **A.**
 솔직하게 말하면 세 가지입니다.
 
-첫 번째, **실 MindGraph 연동이 아직 없습니다.** 실측치는 독립 실험 환경에서 측정했습니다. 실제 운영 트래픽 패턴에서의 히트율은 아직 모릅니다.
+첫 번째, **임베딩 모델 한계.** "오버피팅이란 무엇인가요?"와 "오버피팅이 무엇인지 설명해줘"는 같은 의미인데 유사도가 0.57로 threshold 미달입니다. 현재 모델이 문장 구조에 과민반응하는 경향이 있습니다.
 
-두 번째, **임베딩 모델 한계.** "오버피팅이란 무엇인가요?"와 "오버피팅이 무엇인지 설명해줘"는 같은 의미인데 유사도가 0.57로 threshold 미달입니다. 현재 모델이 문장 구조에 과민반응하는 경향이 있습니다.
+두 번째, **스트리밍 비용 측정.** Phase 3에서 SSE 스트리밍 차단 로직을 구현했지만, 실 Ollama 스트리밍으로 측정한 차단율 데이터가 없습니다. 예상치(>95%)와 실측치의 차이가 얼마나 될지 아직 모릅니다.
 
-세 번째, **스트리밍 비용 측정.** Phase 3에서 SSE 스트리밍 차단 로직을 구현했지만, 실 Ollama 스트리밍으로 측정한 차단율 데이터가 없습니다. 예상치(>95%)와 실측치의 차이가 얼마나 될지 아직 모릅니다.
+세 번째, **K8s 실 배포 미완.** Phase 4에서 이동평균 기반 HPA 설계와 k6 시나리오까지 완성했지만, 실 K8s 클러스터에서 Scale Up/Down 응답 시간과 1,000VU 에러율 실측이 남아있습니다.
 
 ---
 
@@ -463,11 +555,11 @@ Threshold 실험에서 예상과 다른 결과가 나왔을 때 원인을 분석
 **A.**
 우선순위 순서로 말씀드리면:
 
-1. **실 MindGraph 연동 (Phase A):** Ollama 호환 엔드포인트(`/api/chat`)를 추가하면 실제 트래픽으로 모든 미측정 항목을 채울 수 있습니다.
+1. **한국어 특화 임베딩 모델 검토 (B방안):** `ko-sroberta-multitask`나 `KoSimCSE-roberta`로 교체하면 토픽 다른 원본 간 유사도를 낮추고(흡수 현상 감소), 동의어 paraphrase 유사도를 높일 수 있습니다. 다만 768차원이면 HNSW 인덱스 재생성이 필요합니다.
 
-2. **한국어 특화 임베딩 모델 검토 (B방안):** `ko-sroberta-multitask`나 `KoSimCSE-roberta`로 교체하면 토픽 다른 원본 간 유사도를 낮추고(흡수 현상 감소), 동의어 paraphrase 유사도를 높일 수 있습니다. 다만 768차원이면 HNSW 인덱스 재생성이 필요하여 설계상 비용이 있습니다.
+2. **K8s 실 배포 검증:** minikube 또는 실 클러스터에서 Prometheus Adapter + HPA 연동을 검증하고, k6 spike 시나리오로 Scale Up 응답 시간을 실측합니다.
 
-3. **K8s + Custom HPA (Phase 4):** 이동 평균 기반 Scale Up/Down으로 트래픽 급증에 대응합니다.
+3. **실 Ollama 스트리밍 차단율 측정:** Phase 3의 150% 임계값이 실제로 얼마나 효과적인지 데이터로 확인합니다.
 
 ---
 
@@ -495,6 +587,9 @@ Threshold 실험에서 예상과 다른 결과가 나왔을 때 원인을 분석
 ```
 1. 문제 발견 → 설계 → 실측 검증의 완전한 루프
 2. 실패(0% 히트율) → 원인 분석 3가지 → 수정 → 목표 달성
-3. Java(Spring) ↔ Python(FastAPI) 크로스 스택
-4. 107개 단위 테스트, 설계 결정마다 근거 기록
+3. Java(Spring) ↔ Python(FastAPI) 크로스 스택 실 연동 (2026-03-03 검증)
+4. 151개 단위 테스트, 설계 결정마다 근거 기록
+5. Grafana 실시간 비용 시각화 → 95.3% 절감 실측
 ```
+
+> 마지막 업데이트: 2026-03-08 (Phase 5 반영)

@@ -142,7 +142,7 @@ Ollama 네이티브 포맷(`/api/chat`)을 사용한다. 따라서 포맷 변환
 - **Phase B 완료**: Neo4j 하이브리드 RAG (mindgraph-ai 측, 2026-03-03)
 - **Phase 4 완료**: K8s HPA + k6 부하 시나리오 (구현 완료, 실 배포 미완)
 - **Phase 5 완료**: Grafana 대시보드 + 비용/토큰 메트릭 (2026-03-04) ← 최신
-- **브랜치**: phase-5/grafana | **테스트**: 151개 통과
+- **브랜치**: phase-5/grafana | **테스트**: → .claude/SESSION_STATE.md 참조
 - **세션 컨텍스트**: .claude/SESSION_STATE.md 참조
 
 ## 전체 작업 순서
